@@ -17,6 +17,7 @@ dependencies = [
     "litellm>=1.70.0",
     "groq>=0.30.0",
     "openai>=1.90.0",
+    "transformers>=5.16.1",
 ]
 
 [project.optional-dependencies]
@@ -24,9 +25,10 @@ agents = [
     "chromadb>=1.0.0",
     "sentence-transformers>=4.0.0",
     "gradio>=5.0.0",
-    "modal>=1.0.0",
     "plotly>=6.0.0",
     "feedparser>=6.0.11",
+    "beautifulsoup4>=4.12.0",
+    "requests>=2.32.0",
 ]
 
 [dependency-groups]
