@@ -19,14 +19,14 @@ import json
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 
 from openai import OpenAI
 from pydantic import BaseModel, Field, ValidationError
 from tqdm.auto import tqdm
 
 from pricer.items import ROOT, Wine
-from pricer.llm import TPM, Limiter, chat, client_for
+from pricer.llm import TPM, DailyLimitReached, Limiter, chat, client_for
 
 CACHE_DIR = ROOT / "data" / "tasting"
 WORKERS = 4
@@ -153,11 +153,18 @@ def run(
     lock = Lock()
     with open(cache_path(split), "a") as handle, ThreadPoolExecutor(max_workers=workers) as pool:
         failures: list[int] = []
+        exhausted = Event()
 
         def process(wine: Wine) -> None:
-            # One stubborn row must not kill a multi-hour pass; rerun the script to retry it.
+            # One stubborn row must not kill a multi-hour pass; rerun the script to retry it. The
+            # daily allowance running out is different: every remaining row would fail too, so stop.
+            if exhausted.is_set():
+                return
             try:
                 tasting = extract(wine.description, client, model, limiter)
+            except DailyLimitReached:
+                exhausted.set()
+                return
             except RuntimeError:
                 failures.append(wine.id)
                 return
@@ -167,6 +174,8 @@ def run(
             done[wine.id] = tasting
 
         list(tqdm(pool.map(process, todo), total=len(todo), desc=split))
+    if exhausted.is_set():
+        print(f"{split}: stopped early -- the provider's daily token allowance is spent. Rerun tomorrow.")
     if failures:
         print(f"{split}: {len(failures):,} rows failed and stayed uncached; rerun to retry them")
     return done

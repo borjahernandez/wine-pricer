@@ -23,6 +23,12 @@ TPM = 7_000  # Groq's free tier allows 8,000 tokens per minute; leave headroom f
 ATTEMPTS = 8
 BACKOFF = 5.0  # seconds, when the provider does not say how long to wait
 RETRY_AFTER = re.compile(r"try again in ([\d.]+)s")
+DAILY_LIMIT = re.compile(r"tokens per day|TPD")
+
+
+class DailyLimitReached(RuntimeError):
+    """The provider's daily allowance is spent. Groq's free tier gives 200,000 tokens a day, which is
+    a few hundred wines -- worth failing loudly for, since no amount of waiting fixes it today."""
 
 
 @dataclass(frozen=True)
@@ -109,6 +115,10 @@ def chat(
             return response.choices[0].message.content or ""
         except Exception as error:  # noqa: BLE001 -- retry anything: rate limits, timeouts, hiccups
             last_error = error
+            if DAILY_LIMIT.search(str(error)):
+                # A per-minute limit clears while we sleep; a daily one does not. Say so and stop,
+                # rather than burning the retry budget on a wall that will not move for hours.
+                raise DailyLimitReached(f"{model}: the provider's daily token allowance is spent -- {error}") from error
             match = RETRY_AFTER.search(str(error))
             delay = float(match.group(1)) + 0.5 if match else BACKOFF * (attempt + 1)
             logging.getLogger(__name__).debug(f"retrying in {delay:.1f}s after {error.__class__.__name__}")

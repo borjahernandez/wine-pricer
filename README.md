@@ -76,10 +76,13 @@ uv run python app.py                                   # the Gradio app on :7860
 The fine-tune itself runs in Colab: `notebooks/week7_qlora_colab.ipynb` (4-bit Qwen2.5-3B + LoRA).
 `notebooks/week7_prompts.ipynb` builds the prompts and pushes the dataset to the Hub first.
 
-A note on the free Groq tier: 8,000 tokens per minute, which is roughly **six wines a minute**. A
-full pass over the 49,895 training notes is days, so the LLM-summary ablation is a subset experiment
-unless you pay for a higher tier. `pricer/llm.py` paces every call against that budget rather than
-failing, and `scripts/tasting.py` is resumable, so long runs can be interrupted freely.
+**Budget the free Groq tier before planning any LLM experiment.** It allows 8,000 tokens a minute and
+**200,000 a day**, which works out at roughly six wines a minute and a few hundred wines a day. So:
+the tasting-note pass over all 49,895 training wines is months on the free tier, and any evaluation
+of the frontier agent is a sample of a hundred-odd wines, not the full test split. `pricer/llm.py`
+paces calls against the per-minute budget instead of failing, raises `DailyLimitReached` when the
+daily one is gone (no amount of retrying fixes that), and `scripts/tasting.py` resumes, so long runs
+can be interrupted and restarted the next day. A paid tier removes all of this.
 
 ## Metrics
 
@@ -98,6 +101,20 @@ Where the classical ladder lands today, on the 2,000-wine test split:
 | LSA + random forest | $18.36 | 0.527 | 34.7% | 52.9% |
 
 That TF-IDF row is the number to beat.
+
+The week-8 agents are scored on a 100-wine sample of the same split (the frontier agent costs a network
+call per wine), so read them against each other rather than against the rows above:
+
+| agent | MAE | RMSLE | hits | n |
+| --- | --- | --- | --- | --- |
+| Classical, note only | $21.36 | **0.548** | 49.0% | 100 |
+| Neighbours, retrieval only (k=8) | $23.94 | 0.663 | 41.0% | 100 |
+| Frontier (RAG + LLM) | — | — | — | daily token budget spent; rerun tomorrow |
+
+Two lessons already: retrieval on its own beats guessing the mean but loses to bag-of-words, and the
+note-only model matters — serving the metadata-aware pipeline a note with `variety='unknown'` scored
+0.710 instead of 0.548. Fitting a model on features you cannot supply at inference costs more than
+the features are worth.
 
 ## Experiments to try
 

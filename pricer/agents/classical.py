@@ -1,16 +1,18 @@
 """The classical agent: the week-6 TF-IDF + Ridge model, cached to disk so the app starts fast.
 
-It is the cheapest member of the ensemble and, at RMSLE 0.479, the bar the fancier agents must clear.
+The note-only variant, because an agent is handed prose and nothing else -- see `baselines.tfidf_text`
+for why serving the metadata-aware model here would quietly cost accuracy. It is the cheapest member
+of the ensemble and the bar the fancier agents must clear.
 """
 
 import pickle
 from pathlib import Path
 
 from pricer.agents.agent import Agent
-from pricer.baselines import Model, tfidf
+from pricer.baselines import Model, tfidf_text
 from pricer.items import ROOT, Wine
 
-MODEL_FILE = ROOT / "data" / "tfidf_ridge.pkl"
+MODEL_FILE = ROOT / "data" / "tfidf_ridge_note_only.pkl"
 
 
 class ClassicalAgent(Agent):
@@ -25,7 +27,7 @@ class ClassicalAgent(Agent):
         else:
             self.log(f"No model at {path.name}, fitting one from the training split")
             train, _, _ = Wine.load_local()
-            self.model = tfidf(train)
+            self.model = tfidf_text(train)
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "wb") as handle:
                 pickle.dump(self.model, handle)

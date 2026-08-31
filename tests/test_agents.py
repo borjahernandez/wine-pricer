@@ -15,7 +15,7 @@ from pricer.agents.planning import Opportunity, PlanningAgent
 from pricer.agents.scanner import Listing
 from pricer.deals import MAX_CHARS, Article
 from pricer.items import Wine
-from pricer.llm import Limiter
+from pricer.llm import DailyLimitReached, Limiter, chat
 
 NOTE = (
     "Aromas of black cherry and cedar open onto a firm palate of graphite and dried herbs, with "
@@ -47,6 +47,36 @@ class TestLimiter:
         started = time.monotonic()
         limiter.acquire(500)
         assert time.monotonic() - started < 0.1
+
+
+class TestChat:
+    def stub(self, error: Exception):
+        class Client:
+            def __init__(self):
+                self.calls = 0
+                self.chat = self
+
+            @property
+            def completions(self):
+                return self
+
+            def create(self, **kwargs):
+                self.calls += 1
+                raise error
+
+        return Client()
+
+    def test_a_per_minute_limit_is_retried(self):
+        client = self.stub(RuntimeError("Rate limit reached ... on tokens per minute (TPM), try again in 0.01s"))
+        with pytest.raises(RuntimeError, match="failed after 3 attempts"):
+            chat(client, "m", [{"role": "user", "content": "hi"}], attempts=3, limiter=Limiter(1_000_000))
+        assert client.calls == 3
+
+    def test_a_daily_limit_stops_immediately(self):
+        client = self.stub(RuntimeError("Rate limit reached ... on tokens per day (TPD): Limit 200000"))
+        with pytest.raises(DailyLimitReached):
+            chat(client, "m", [{"role": "user", "content": "hi"}], attempts=8, limiter=Limiter(1_000_000))
+        assert client.calls == 1
 
 
 class TestScannerModels:

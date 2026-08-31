@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from pricer import prompts
-from pricer.baselines import constant, tfidf
+from pricer.baselines import constant, tfidf, tfidf_text
 from pricer.curate import balance, deduplicate, log_price_bins, split
 from pricer.evaluator import Report
 from pricer.items import PREFIX, QUESTION, Wine
@@ -186,3 +186,11 @@ class TestBaselines:
         model = tfidf(cheap + pricey, max_features=200)
         assert model(cheap[0]) < model(pricey[0])
         assert model.predict_all(cheap + pricey).shape == (60,)
+
+    def test_note_only_variant_ignores_metadata(self):
+        train = [wine(6, description=f"Simple jammy quaffer {i}. " + NOTE, variety="Merlot") for i in range(30)]
+        train += [wine(300, description=f"Structured monument {i}. " + NOTE, variety="Nebbiolo") for i in range(30)]
+        model = tfidf_text(train, max_features=200)
+        # A wine the agents can build -- prose, no variety, no vintage -- must still price sensibly.
+        bare = Wine(description=train[-1].description, price=0.0, points=0)
+        assert model(bare) > model(train[0])
