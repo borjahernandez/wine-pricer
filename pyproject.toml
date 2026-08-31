@@ -1,0 +1,54 @@
+[project]
+name = "wine-pricer"
+version = "0.1.0"
+description = "Predict a wine's price and score from its tasting note: data curation, a baseline ladder, fine-tuning and an agent framework"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "datasets>=3.6.0",
+    "huggingface-hub>=0.34.0",
+    "python-dotenv>=1.0.1",
+    "numpy>=2.1.0",
+    "pydantic>=2.9.0",
+    "pandas>=2.2.0",
+    "scikit-learn>=1.5.0",
+    "matplotlib>=3.9.0",
+    "tqdm>=4.66.0",
+    "litellm>=1.70.0",
+    "groq>=0.30.0",
+    "openai>=1.90.0",
+]
+
+[project.optional-dependencies]
+agents = [
+    "chromadb>=1.0.0",
+    "sentence-transformers>=4.0.0",
+    "gradio>=5.0.0",
+    "modal>=1.0.0",
+    "plotly>=6.0.0",
+    "feedparser>=6.0.11",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.12.0",
+    "pytest>=8.3.0",
+    "jupyterlab>=4.4.0",
+    "ipywidgets>=8.1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pricer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
