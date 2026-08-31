@@ -253,6 +253,283 @@ for index in order[-15:][::-1]:
 ]
 
 
+WEEK7_PROMPTS = [
+    (
+        "md",
+        """# Week 7, day 1 -- prompts for the fine-tune
+
+The fine-tune eats text, so before any GPU time: decide what the model reads, how long it may be,
+and push the result to the Hub where Colab can reach it.
+
+`pricer/prompts.py` holds the layout. The rule that matters: the training prompt and the inference
+prompt must be identical up to the final `Price is $`, or the model learns a format it will never see
+again.""",
+    ),
+    (
+        "code",
+        """import os
+
+import matplotlib.pyplot as plt
+import numpy as np
+from dotenv import load_dotenv
+from huggingface_hub import login
+from transformers import AutoTokenizer
+
+from pricer import prompts
+from pricer.items import Wine
+
+load_dotenv(override=True)
+login(os.environ["HF_TOKEN"])
+
+BASE_MODEL = "Qwen/Qwen2.5-3B"  # open weights, no gate to accept; Llama-3.2-3B works the same way
+DATASET = "borjahernandez/wine-pricer"
+
+tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
+train, val, test = Wine.load_local()
+print(f"train={len(train):,} val={len(val):,} test={len(test):,}")""",
+    ),
+    ("md", "### How long is a wine, in tokens?"),
+    (
+        "code",
+        """counts = np.array([len(tokenizer.encode(wine.full, add_special_tokens=False)) for wine in train[:5_000]])
+print(f"median {np.median(counts):.0f}, p99 {np.percentile(counts, 99):.0f}, max {counts.max()}")
+plt.figure(figsize=(8, 3))
+plt.hist(counts, bins=60, color="#7f1d3f")
+plt.axvline(prompts.CUTOFF, color="black", linestyle="--", label=f"CUTOFF={prompts.CUTOFF}")
+plt.legend()
+plt.title("tokens per wine")
+plt.show()
+cut = (counts > prompts.CUTOFF).mean()
+print(f"CUTOFF truncates {cut:.1%} of wines")""",
+    ),
+    (
+        "md",
+        """### Build the prompts
+
+Truncation happens in token space and then backs off to a word boundary, so a wine never ends
+mid-word. Every price is rendered as `$42.00` -- one consistent shape, two tokens, easy to parse
+back.""",
+    ),
+    (
+        "code",
+        """prompts.prepare(train, tokenizer)
+prompts.prepare(val, tokenizer)
+prompts.prepare(test, tokenizer)
+print(train[0].prompt)
+print("\\n--- at inference the model sees:\\n")
+print(train[0].test_prompt())""",
+    ),
+    (
+        "md",
+        """### Push to the Hub
+
+Colab pulls this dataset for training. Nothing here is secret, but the tasting notes are Wine
+Enthusiast's, so keep the dataset private if you plan to leave it up.""",
+    ),
+    ("code", 'Wine.push_to_hub(DATASET, train, val, test)\nprint(f"https://huggingface.co/datasets/{DATASET}")'),
+    (
+        "md",
+        """### Experiment: is the flowery prose worth its tokens?
+
+Rerun this notebook with `use_summary=True` (after `scripts/tasting.py` has filled in the LLM
+summaries) and push to a second dataset. Fine-tune on both. The summary is roughly a fifth of the
+tokens, so if it scores within noise of the full note, the note is mostly decoration.""",
+    ),
+    (
+        "code",
+        """# prompts.prepare(train, tokenizer, use_summary=True)   # needs scripts/tasting.py to have run
+# Wine.push_to_hub(f"{DATASET}-summaries", train, val, test)""",
+    ),
+]
+
+WEEK7_QLORA = [
+    (
+        "md",
+        """# Week 7, days 2-4 -- QLoRA fine-tune
+
+**Run this in Colab on a T4 (free) or an A100.** Nothing here works on a laptop: it needs a CUDA GPU
+for 4-bit quantisation.
+
+The plan: load a 3B base model in 4-bit, attach LoRA adapters to the attention projections, and train
+on the tasting-note prompts so the model completes `Price is $` with a number. Only the adapters
+train -- about 0.5% of the parameters -- which is what makes this fit in 16GB.""",
+    ),
+    (
+        "code",
+        """!pip install -q "transformers>=4.44" "peft>=0.13" "trl>=0.11" "bitsandbytes>=0.44" \\
+    "datasets>=3.0" "accelerate>=1.0"
+!git clone -q https://github.com/borjahernandez/wine-pricer.git
+%cd wine-pricer""",
+    ),
+    (
+        "code",
+        """import torch
+from datasets import load_dataset
+from google.colab import userdata
+from huggingface_hub import login
+from peft import LoraConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from trl import DataCollatorForCompletionOnlyLM, SFTConfig, SFTTrainer
+
+login(userdata.get("HF_TOKEN"))
+
+BASE_MODEL = "Qwen/Qwen2.5-3B"
+DATASET = "borjahernandez/wine-pricer"
+RUN = "wine-pricer-qwen3b"
+PREFIX = "Price is $"  # the response template: loss is computed on what follows it""",
+    ),
+    (
+        "md",
+        """### Hyperparameters
+
+Sensible starting points, all worth a sweep:
+
+| knob | value | why |
+| --- | --- | --- |
+| `r` | 32 | adapter rank. 8 underfits here, 64 costs memory for little gain |
+| `alpha` | 64 | conventionally 2r |
+| target modules | attention projections | where the task-specific reasoning lives |
+| `lr` | 1e-4 | LoRA tolerates rates ~10x a full fine-tune |
+| epochs | 1 | 50k examples is plenty; a second epoch mostly memorises |
+| 4-bit nf4, double quant | on | the whole reason this fits on a T4 |""",
+    ),
+    (
+        "code",
+        """LORA = LoraConfig(
+    r=32,
+    lora_alpha=64,
+    lora_dropout=0.1,
+    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+    task_type="CAUSAL_LM",
+)
+
+QUANT = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_compute_dtype=torch.bfloat16,
+)
+
+CONFIG = SFTConfig(
+    output_dir=RUN,
+    num_train_epochs=1,
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=4,   # effective batch 16
+    learning_rate=1e-4,
+    lr_scheduler_type="cosine",
+    warmup_ratio=0.03,
+    optim="paged_adamw_32bit",
+    max_seq_length=256,
+    dataset_text_field="prompt",
+    logging_steps=50,
+    save_steps=500,
+    save_total_limit=2,
+    bf16=True,
+    report_to="none",
+    push_to_hub=True,
+    hub_model_id=f"borjahernandez/{RUN}",
+    hub_private_repo=True,
+)""",
+    ),
+    (
+        "code",
+        """data = load_dataset(DATASET)
+tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
+tokenizer.pad_token = tokenizer.eos_token
+tokenizer.padding_side = "right"
+
+model = AutoModelForCausalLM.from_pretrained(BASE_MODEL, quantization_config=QUANT, device_map="auto")
+model.generation_config.pad_token_id = tokenizer.pad_token_id
+
+# Train on the answer only: without this the model spends its capacity learning to recite tasting notes.
+collator = DataCollatorForCompletionOnlyLM(response_template=PREFIX, tokenizer=tokenizer)
+
+trainer = SFTTrainer(
+    model=model,
+    train_dataset=data["train"],
+    peft_config=LORA,
+    args=CONFIG,
+    data_collator=collator,
+)
+trainer.train()
+trainer.push_to_hub(f"Fine-tuned on {DATASET}")""",
+    ),
+    (
+        "md",
+        """### Score it on the same test split as everything else
+
+Two ways to read the answer out:
+
+1. **Generate** a few tokens and parse the number.
+2. **Weighted average over the logits** of the first answer token -- the model's whole distribution
+   instead of its argmax, which is measurably better calibrated for a numeric target.
+
+Both go through `pricer.evaluator`, so the result drops straight onto the week-6 leaderboard.""",
+    ),
+    (
+        "code",
+        """import re
+
+from pricer.evaluator import evaluate
+from pricer.items import Wine
+
+_, _, test = Wine.from_hub(DATASET)
+model.eval()
+
+
+def parse_price(text: str) -> float:
+    match = re.search(r"[-+]?\\d[\\d,]*\\.?\\d*", text.replace("$", ""))
+    return float(match.group().replace(",", "")) if match else 0.0
+
+
+def specialist(wine: Wine) -> float:
+    inputs = tokenizer(wine.test_prompt(), return_tensors="pt").to("cuda")
+    with torch.no_grad():
+        output = model.generate(**inputs, max_new_tokens=6, do_sample=False)
+    completion = tokenizer.decode(output[0][inputs["input_ids"].shape[1] :])
+    return parse_price(completion)
+
+
+specialist.__name__ = "Fine-tuned Qwen2.5-3B"
+evaluate(specialist, test, size=250)""",
+    ),
+    (
+        "code",
+        """def weighted(wine: Wine, top: int = 8) -> float:
+    \"\"\"Expected price under the model's own distribution over the first answer token.\"\"\"
+    inputs = tokenizer(wine.test_prompt(), return_tensors="pt").to("cuda")
+    with torch.no_grad():
+        logits = model(**inputs).logits[0, -1]
+    probabilities = torch.nn.functional.softmax(logits, dim=-1)
+    values, indices = probabilities.topk(top)
+    prices, weights = [], []
+    for probability, index in zip(values.tolist(), indices.tolist(), strict=True):
+        price = parse_price(tokenizer.decode(index))
+        if price:
+            prices.append(price)
+            weights.append(probability)
+    if not prices:
+        return 0.0
+    total = sum(weights)
+    return sum(price * weight for price, weight in zip(prices, weights, strict=True)) / total
+
+
+weighted.__name__ = "Fine-tuned Qwen2.5-3B (weighted)"
+evaluate(weighted, test, size=250)""",
+    ),
+    (
+        "md",
+        """### Experiments
+
+- **Base model, untrained** on the same prompts: the gap is what the fine-tune actually bought.
+- **Rank sweep**: r = 8 / 32 / 64 at matched steps.
+- **Summaries vs full notes** (`-summaries` dataset from the previous notebook).
+- **Add `points` to the prompt** and watch the fine-tune coast -- the same leakage the baselines see.
+- **Bigger base**: an 8B model in 4-bit still fits an A100. Does scale beat data curation here?""",
+    ),
+]
+
+
 def build(name: str, cells: list[tuple[str, str]]) -> None:
     notebook = nbformat.v4.new_notebook(
         cells=[
@@ -273,3 +550,5 @@ def build(name: str, cells: list[tuple[str, str]]) -> None:
 if __name__ == "__main__":
     build("week6_curate.ipynb", WEEK6)
     build("week6_baselines.ipynb", WEEK6_BASELINES)
+    build("week7_prompts.ipynb", WEEK7_PROMPTS)
+    build("week7_qlora_colab.ipynb", WEEK7_QLORA)

@@ -17,6 +17,7 @@ dependencies = [
     "litellm>=1.70.0",
     "groq>=0.30.0",
     "openai>=1.90.0",
+    "transformers>=5.16.1",
 ]
 
 [project.optional-dependencies]
