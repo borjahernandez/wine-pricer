@@ -1,0 +1,10 @@
+.venv/
+data/
+.env
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+results.json
+jsonl/
+chroma/
+memory.json
