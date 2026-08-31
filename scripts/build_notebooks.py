@@ -616,7 +616,12 @@ nearest prices, no LLM. `FrontierAgent` puts the same neighbours in a prompt and
 number. The gap between them is what the language model contributes over the lookup; if it is small,
 the expensive part is not earning its keep.
 
-100 test wines, because the frontier agent goes over the network for each one.""",
+100 test wines, because the frontier agent goes over the network for each one. Note the sample size in
+the leaderboard: these rows are not comparable to the 2,000-wine baseline rows, only to each other.
+
+The classical agent here is the **note-only** model, not the week-6 one. An agent receives prose and
+nothing else, so feeding the metadata-aware pipeline `variety='unknown', vintage=0` at inference --
+after fitting it on the real values -- cost about 0.2 RMSLE. Train on what you can actually serve.""",
     ),
     (
         "code",
@@ -624,7 +629,7 @@ the expensive part is not earning its keep.
 neighbours = NeighboursAgent(collection, encoder)
 classical = ClassicalAgent()
 
-for name, agent in [("Neighbours (k=8, retrieval only)", neighbours), ("Classical (TF-IDF + Ridge)", classical)]:
+for name, agent in [("Neighbours (k=8, retrieval only)", neighbours), ("Classical (note only)", classical)]:
     guesses = [agent.price(w.description) for w in sample]
     Report(name, [w.label for w in sample], guesses, [w.price for w in sample]).save()
 

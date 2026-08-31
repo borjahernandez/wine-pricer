@@ -14,6 +14,7 @@ import gradio as gr
 import pandas as pd
 
 from pricer.agents import ClassicalAgent, FrontierAgent, NeighboursAgent, PlanningAgent, setup_logging
+from pricer.llm import DailyLimitReached
 from pricer.vectors import encoder, load, similar
 
 EXAMPLE = (
@@ -39,22 +40,28 @@ def estimate(note: str, use_rag: bool) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not note.strip():
         raise gr.Error("Paste a tasting note first")
     ready = agents()
-    names = ["Classical (TF-IDF + Ridge)"]
-    prices = [ready["classical"].price(note)]
+    rows = [("Classical (note only)", f"${ready['classical'].price(note):.2f}")]
     comparables = pd.DataFrame(columns=["comparable wine", "price"])
     if use_rag:
-        names += ["Neighbours (retrieval only)", "Frontier (RAG + LLM)"]
-        prices += [ready["neighbours"].price(note), ready["frontier"].price(note)]
+        rows.append(("Neighbours (retrieval only)", f"${ready['neighbours'].price(note):.2f}"))
+        try:
+            rows.append(("Frontier (RAG + LLM)", f"${ready['frontier'].price(note):.2f}"))
+        except DailyLimitReached:
+            # The free tier runs out long before curiosity does; the other agents still work.
+            rows.append(("Frontier (RAG + LLM)", "unavailable: daily token budget spent"))
         notes, found = similar(note, ready["collection"], ready["encoder"], k=5)
         comparables = pd.DataFrame(
             {"comparable wine": [text[:200] + "..." for text in notes], "price": [f"${p:.0f}" for p in found]}
         )
-    return pd.DataFrame({"agent": names, "estimate": [f"${p:.2f}" for p in prices]}), comparables
+    return pd.DataFrame(rows, columns=["agent", "estimate"]), comparables
 
 
 def scan(per_feed: int) -> pd.DataFrame:
     planner = PlanningAgent(agents()["classical"])
-    opportunities = planner.plan(per_feed=int(per_feed))
+    try:
+        opportunities = planner.plan(per_feed=int(per_feed))
+    except DailyLimitReached as error:
+        raise gr.Error("The provider's daily token allowance is spent -- try again tomorrow") from error
     if not opportunities:
         return pd.DataFrame([{"wine": "Nothing new with a price in the feeds right now", "listed": "", "gap": ""}])
     return pd.DataFrame(
@@ -71,7 +78,7 @@ def scan(per_feed: int) -> pd.DataFrame:
     )
 
 
-with gr.Blocks(title="Vintage Is Right", theme=gr.themes.Soft(primary_hue="rose")) as ui:
+with gr.Blocks(title="Vintage Is Right") as ui:
     gr.Markdown("# Vintage Is Right\nHow much is that bottle worth, judging only by how it tastes?")
     with gr.Tab("Price a wine"):
         note = gr.Textbox(label="Tasting note", lines=6, value=EXAMPLE)
@@ -89,4 +96,4 @@ with gr.Blocks(title="Vintage Is Right", theme=gr.themes.Soft(primary_hue="rose"
 
 if __name__ == "__main__":
     setup_logging()
-    ui.launch(server_name="0.0.0.0", server_port=7860)
+    ui.launch(server_name="0.0.0.0", server_port=7860, theme=gr.themes.Soft(primary_hue="rose"))
