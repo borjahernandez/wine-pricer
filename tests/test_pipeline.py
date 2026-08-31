@@ -5,6 +5,7 @@ parsing rules, leakage, target balance, split reproducibility, and the metrics t
 import numpy as np
 import pytest
 
+from pricer import prompts
 from pricer.baselines import constant, tfidf
 from pricer.curate import balance, deduplicate, log_price_bins, split
 from pricer.evaluator import Report
@@ -36,6 +37,22 @@ def row(**overrides) -> dict:
 
 def wine(price: float, description: str = NOTE, **overrides) -> Wine:
     return Wine(description=description, price=price, points=90, **overrides)
+
+
+class WordTokenizer:
+    """A stand-in for a HuggingFace tokenizer: one token per word, so truncation is checkable."""
+
+    def __init__(self):
+        self.vocabulary: list[str] = []
+
+    def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
+        for word in text.split():
+            if word not in self.vocabulary:
+                self.vocabulary.append(word)
+        return [self.vocabulary.index(word) for word in text.split()]
+
+    def decode(self, tokens: list[int]) -> str:
+        return " ".join(self.vocabulary[token] for token in tokens)
 
 
 class TestParser:
@@ -114,14 +131,27 @@ class TestCuration:
         assert sorted(w.price for w in again) == prices
 
 
-class TestItems:
-    def test_prompt_round_trip(self):
-        item = wine(42)
-        item.make_prompt("A wine.")
+class TestPrompts:
+    def test_training_prompt_carries_the_answer_and_inference_prompt_does_not(self):
+        item = parse(row())
+        prompts.prepare([item])
         assert QUESTION in item.prompt
         assert item.prompt.endswith(f"{PREFIX}42.00")
-        assert item.test_prompt().endswith(PREFIX)
+        assert item.test_prompt() == prompts.for_inference(item)
         assert "42.00" not in item.test_prompt()
+
+    def test_summary_input_needs_a_summary(self):
+        item = parse(row())
+        with pytest.raises(ValueError):
+            prompts.for_inference(item, use_summary=True)
+        item.summary = "Dense, savoury Barolo built for the cellar."
+        assert item.summary in prompts.for_inference(item, use_summary=True)
+
+    def test_truncate_keeps_whole_words(self):
+        tokenizer = WordTokenizer()
+        text = "one two three four five six"
+        assert prompts.truncate(text, tokenizer, cutoff=99) == text
+        assert prompts.truncate(text, tokenizer, cutoff=3) == "one two"
 
 
 class TestEvaluator:

@@ -5385,6 +5385,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "scikit-learn" },
     { name = "tqdm" },
+    { name = "transformers" },
 ]
 
 [package.optional-dependencies]
@@ -5425,6 +5426,7 @@ requires-dist = [
     { name = "scikit-learn", specifier = ">=1.5.0" },
     { name = "sentence-transformers", marker = "extra == 'agents'", specifier = ">=4.0.0" },
     { name = "tqdm", specifier = ">=4.66.0" },
+    { name = "transformers", specifier = ">=5.16.1" },
 ]
 provides-extras = ["agents"]
 

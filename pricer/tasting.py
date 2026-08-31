@@ -16,6 +16,8 @@ interrupted pass (or an exhausted rate limit) picks up where it stopped.
 """
 
 import json
+import re
+import time
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -29,8 +31,10 @@ from pricer.items import ROOT, Wine
 from pricer.llm import client_for
 
 CACHE_DIR = ROOT / "data" / "tasting"
-WORKERS = 8
-ATTEMPTS = 3
+WORKERS = 4
+ATTEMPTS = 8
+BACKOFF = 5.0  # seconds, when the provider does not say how long to wait
+RETRY_AFTER = re.compile(r"try again in ([\d.]+)s")
 DIMENSIONS = ("fruit", "oak", "tannin", "acidity", "body", "finish")
 
 SYSTEM = (
@@ -104,9 +108,12 @@ def load_cache(split: str) -> dict[int, Tasting]:
 
 
 def extract(note: str, client: OpenAI, model: str) -> Tasting:
-    """One call, retried, because a small model occasionally wraps its JSON in prose."""
+    """One call, retried: free tiers rate-limit hard and small models sometimes wrap JSON in prose.
+
+    A 429 usually names the wait in its message, so honour that rather than guessing.
+    """
     last_error: Exception | None = None
-    for _ in range(ATTEMPTS):
+    for attempt in range(ATTEMPTS):
         try:
             response = client.chat.completions.create(
                 model=model,
@@ -116,11 +123,15 @@ def extract(note: str, client: OpenAI, model: str) -> Tasting:
                 ],
                 response_format={"type": "json_object"},
                 temperature=0,
-                max_tokens=300,
+                max_tokens=400,
+                # gpt-oss models think before answering; this is pure extraction, so keep it brief
+                extra_body={"reasoning_effort": "low"},
             )
             return Tasting.model_validate_json(response.choices[0].message.content)
         except Exception as error:  # noqa: BLE001 -- retry anything: rate limits, bad JSON, timeouts
             last_error = error
+            match = RETRY_AFTER.search(str(error))
+            time.sleep(float(match.group(1)) + 0.5 if match else BACKOFF * (attempt + 1))
     raise RuntimeError(f"Extraction failed after {ATTEMPTS} attempts: {last_error}")
 
 

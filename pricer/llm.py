@@ -21,7 +21,8 @@ class Provider:
 
 
 PROVIDERS = {
-    "groq": Provider("GROQ_API_KEY", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
+    # Groq rotates its catalogue; `client_for("groq")[0].models.list()` shows what your key can reach.
+    "groq": Provider("GROQ_API_KEY", "https://api.groq.com/openai/v1", "openai/gpt-oss-20b"),
     "openai": Provider("OPENAI_API_KEY", None, "gpt-4o-mini"),
     "ollama": Provider("OLLAMA_API_KEY", "http://localhost:11434/v1", "llama3.2"),
 }
