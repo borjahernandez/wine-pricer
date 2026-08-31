@@ -22,11 +22,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm.auto import tqdm
 
-from pricer.items import Wine
+from pricer.items import ROOT, Wine
 
 DEFAULT_SIZE = 250
 WORKERS = 5
-RESULTS_FILE = Path("results.json")
+RESULTS_FILE = ROOT / "results.json"
 
 
 def post_process(value: float | str) -> float:
