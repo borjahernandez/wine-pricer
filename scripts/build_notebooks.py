@@ -547,8 +547,220 @@ def build(name: str, cells: list[tuple[str, str]]) -> None:
     print(f"wrote {path} ({len(cells)} cells)")
 
 
+WEEK8_RAG = [
+    (
+        "md",
+        """# Week 8, day 1 -- RAG over tasting notes
+
+Retrieval asks a different question from the models so far: not "what does this prose imply about
+price" but "what did wines that taste like this actually cost".
+
+The store holds tasting notes only. No price, no critic score, no winery in the embedded text -- if
+those went in, similarity search would find the answer instead of a comparable wine, and the whole
+evaluation would be a leak with extra steps. Prices live in the metadata, retrieved *after* the
+match, which is how a comparable is supposed to work.""",
+    ),
+    (
+        "code",
+        """from collections import Counter
+
+import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.manifold import TSNE
+
+from pricer import vectors
+from pricer.agents import ClassicalAgent, FrontierAgent, NeighboursAgent, setup_logging
+from pricer.evaluator import Report, leaderboard
+from pricer.items import Wine
+
+setup_logging()
+train, val, test = Wine.load_local()
+collection = vectors.load()  # built by scripts/vectors.py
+encoder = vectors.encoder()
+print(f"{collection.count():,} tasting notes embedded")""",
+    ),
+    (
+        "md",
+        """### Does the embedding space know about price?
+
+If wines that taste alike also cost alike, the neighbourhood structure carries price information and
+retrieval will help. Colour a t-SNE projection by price and look for gradient rather than noise.""",
+    ),
+    (
+        "code",
+        """embeddings, prices, varieties = vectors.sample_coordinates(collection, limit=2_000)
+flat = TSNE(n_components=2, random_state=42, init="pca", perplexity=30).fit_transform(embeddings)
+plt.figure(figsize=(9, 7))
+points = plt.scatter(flat[:, 0], flat[:, 1], c=np.log1p(prices), cmap="RdYlGn_r", s=8)
+plt.colorbar(points, label="log1p(price)")
+plt.title("2,000 tasting notes, coloured by price")
+plt.show()
+print("Most common varieties in the sample:", Counter(varieties).most_common(5))""",
+    ),
+    ("md", "### What does retrieval return for one wine?"),
+    (
+        "code",
+        """wine = test[7]
+notes, found = vectors.similar(wine.description, collection, encoder, k=5)
+print(f"{wine.label} -- actually ${wine.price:.0f}\\n")
+for note, price in zip(notes, found, strict=True):
+    print(f"${price:>6.0f}  {note[:110]}...")
+print(f"\\ngeometric mean of the neighbours: ${np.expm1(np.log1p(found).mean()):.2f}")""",
+    ),
+    (
+        "md",
+        """### Retrieval alone, then retrieval plus a language model
+
+Two agents, one question each. `NeighboursAgent` is pure retrieval: the geometric mean of the k
+nearest prices, no LLM. `FrontierAgent` puts the same neighbours in a prompt and asks a model for a
+number. The gap between them is what the language model contributes over the lookup; if it is small,
+the expensive part is not earning its keep.
+
+100 test wines, because the frontier agent goes over the network for each one.""",
+    ),
+    (
+        "code",
+        """sample = test[:100]
+neighbours = NeighboursAgent(collection, encoder)
+classical = ClassicalAgent()
+
+for name, agent in [("Neighbours (k=8, retrieval only)", neighbours), ("Classical (TF-IDF + Ridge)", classical)]:
+    guesses = [agent.price(w.description) for w in sample]
+    Report(name, [w.label for w in sample], guesses, [w.price for w in sample]).save()
+
+frontier = FrontierAgent(collection, encoder)
+guesses = [frontier.price(w.description) for w in sample]
+Report("Frontier (RAG + LLM)", [w.label for w in sample], guesses, [w.price for w in sample]).save()
+leaderboard()""",
+    ),
+    (
+        "md",
+        """### Experiments worth running here
+
+- Sweep `k` in `NeighboursAgent`. Too few neighbours is noisy, too many regresses to the mean.
+- Weight the neighbours by similarity instead of averaging them flat.
+- Retrieve on the LLM summary instead of the full note (`scripts/tasting.py` first) and see whether a
+  tighter, more structured text retrieves better comparables.
+- Embed with a bigger encoder (`all-mpnet-base-v2`) and measure whether the extra dimensions pay.
+- Give the frontier agent the neighbours' varieties and regions too, and see if context helps or
+  just distracts it.""",
+    ),
+]
+
+WEEK8_AGENTS = [
+    (
+        "md",
+        """# Week 8, days 2-5 -- the agent framework
+
+Five agents, each with one job, wired into a pipeline that goes from an RSS feed to a notification:
+
+| agent | what it does |
+| --- | --- |
+| `ClassicalAgent` | the week-6 TF-IDF + Ridge model, cheap and offline |
+| `NeighboursAgent` | retrieval only: the geometric mean of comparable prices |
+| `FrontierAgent` | RAG plus a language model |
+| `SpecialistAgent` | our own QLoRA fine-tune (needs a GPU, so not run here) |
+| `EnsembleAgent` | a linear blend of the above, fitted on validation |
+| `ScannerAgent` | reads the wine press and structures every wine quoted with a price |
+| `PlanningAgent` | scan, price, rank by gap, notify |""",
+    ),
+    (
+        "code",
+        """from pricer import vectors
+from pricer.agents import (
+    ClassicalAgent,
+    EnsembleAgent,
+    FrontierAgent,
+    NeighboursAgent,
+    PlanningAgent,
+    ScannerAgent,
+    setup_logging,
+)
+from pricer.evaluator import Report, leaderboard
+from pricer.items import Wine
+
+setup_logging()
+train, val, test = Wine.load_local()
+collection, encoder = vectors.load(), vectors.encoder()
+members = [ClassicalAgent(), NeighboursAgent(collection, encoder), FrontierAgent(collection, encoder)]""",
+    ),
+    (
+        "md",
+        """### Fit the blend
+
+On **validation**, never on train: the classical member was fitted on train and the retrieval members
+can find train wines verbatim, so their training-set accuracy is fantasy. 150 wines is enough for
+five coefficients and keeps the frontier agent's bill small.""",
+    ),
+    (
+        "code",
+        """ensemble = EnsembleAgent(members)
+ensemble.fit(val[:150])
+ensemble.save()
+ensemble.price(test[0].description), test[0].price""",
+    ),
+    ("md", "### Does the blend beat its members?"),
+    (
+        "code",
+        """sample = test[:100]
+guesses = [ensemble.price(w.description) for w in sample]
+Report("Ensemble", [w.label for w in sample], guesses, [w.price for w in sample]).save()
+leaderboard()""",
+    ),
+    (
+        "md",
+        """### The scanner: real wines, in the wild
+
+There is no free live wine-price API, and the deal aggregators carry almost no wine, so the source
+here is the wine press: Wine Enthusiast and Decanter RSS. Their articles quote a tasting note and a
+shelf price, which is exactly the pair this project needs. See `pricer/deals.py` for what was
+verified reachable.
+
+Editorial feeds are noisy: many articles name no price at all, and the scanner throws those away.""",
+    ),
+    (
+        "code",
+        """scanner = ScannerAgent()
+listings = scanner.scan(per_feed=3)
+for listing in listings:
+    print(f"${listing.price:>7.0f}  {listing.name}\\n          {listing.note[:110]}...")""",
+    ),
+    (
+        "md",
+        """### The planner, end to end
+
+Scan, drop anything outside the $4-$500 range the models were trained on, price the rest, rank by the
+gap, notify on anything big. `memory.json` stops a second run re-reporting the same wine.
+
+A word on the gap: our best model carries an RMSLE near 0.5, so a "$20 bargain" is inside the noise.
+The interesting output is the pipeline working, not the trade.""",
+    ),
+    (
+        "code",
+        """planner = PlanningAgent(ensemble, scanner=scanner)
+opportunities = planner.plan(per_feed=3, threshold=15.0)
+for opportunity in opportunities[:10]:
+    print(opportunity.summary(), "\\n")""",
+    ),
+    (
+        "md",
+        """### Experiments worth running here
+
+- Add the fine-tuned `SpecialistAgent` to the members (on a GPU box) and refit the blend. Does the
+  specialist dominate, or does the ensemble still want the retrieval members?
+- Replace the linear blend with gradient boosting over the members' guesses.
+- Have the frontier agent output a *range* and use its width as an uncertainty feature for the blend.
+- Point the scanner at a retailer's feed instead of the press and see how much of the pipeline still
+  works when the prose is marketing copy rather than criticism.
+- Run `python app.py` for the Gradio front end, and `scripts/plan.py` for the pipeline on a cron.""",
+    ),
+]
+
+
 if __name__ == "__main__":
     build("week6_curate.ipynb", WEEK6)
     build("week6_baselines.ipynb", WEEK6_BASELINES)
     build("week7_prompts.ipynb", WEEK7_PROMPTS)
     build("week7_qlora_colab.ipynb", WEEK7_QLORA)
+    build("week8_rag.ipynb", WEEK8_RAG)
+    build("week8_agents.ipynb", WEEK8_AGENTS)
