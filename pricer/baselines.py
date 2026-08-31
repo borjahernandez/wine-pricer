@@ -52,14 +52,17 @@ class Model:
     one vectorised call.
     """
 
-    def __init__(self, name: str, pipeline: Pipeline):
+    def __init__(self, name: str, pipeline: Pipeline, text_only: bool = False):
         self.__name__ = name
         self.pipeline = pipeline
+        self.text_only = text_only  # pipelines that take raw notes rather than the feature table
 
     def __call__(self, wine: Wine) -> float:
         return float(self.predict_all([wine])[0])
 
     def predict_all(self, wines: Sequence[Wine]) -> np.ndarray:
+        if self.text_only:
+            return np.expm1(self.pipeline.predict([wine.description for wine in wines]))
         return np.expm1(self.pipeline.predict(to_frame(wines)))
 
 
@@ -132,6 +135,27 @@ def tfidf(train: Sequence[Wine], max_features: int = 40_000) -> Model:
     )
     pipeline.fit(to_frame(train), log_prices(train))
     return Model("TF-IDF + Ridge", pipeline)
+
+
+def tfidf_text(train: Sequence[Wine], max_features: int = 40_000) -> Model:
+    """The same rung with the note as its only input, for callers who only ever have prose.
+
+    The agents are handed a tasting note and nothing else. Serving them the metadata-aware
+    model means fitting on real varieties and regions and then predicting with 'unknown' for all of
+    them -- a train/serve skew that cost about 0.2 RMSLE when measured. Better to fit the model that
+    matches what the caller can actually supply.
+    """
+    pipeline = Pipeline(
+        [
+            (
+                "note",
+                TfidfVectorizer(max_features=max_features, ngram_range=(1, 2), min_df=3, sublinear_tf=True),
+            ),
+            ("model", Ridge(alpha=1.0)),
+        ]
+    )
+    pipeline.fit([wine.description for wine in train], log_prices(train))
+    return Model("TF-IDF + Ridge (note only)", pipeline, text_only=True)
 
 
 def lsa_forest(train: Sequence[Wine], components: int = 200, trees: int = 200) -> Model:

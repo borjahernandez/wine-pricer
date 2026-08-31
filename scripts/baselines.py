@@ -1,4 +1,4 @@
-"""Week 6 days 3-4, as a script: fit the baseline ladder and score every rung the same way.
+"""The baseline ladder as a script: fit the baseline ladder and score every rung the same way.
 
     uv run python scripts/baselines.py
 

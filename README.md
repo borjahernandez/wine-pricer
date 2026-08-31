@@ -2,9 +2,9 @@
 
 *How much is that bottle?* Given a tasting note and a little geography, predict the price.
 
-A playground built along the lines of weeks 6-8 of Ed Donner's LLM engineering course, but on wine
-reviews instead of Amazon products: curate a big messy dataset, establish classical baselines,
-fine-tune an open model against them, then wrap the whole thing in retrieval and agents.
+A playground for LLM engineering on real, messy data: curate a big scraped dataset, establish
+classical baselines, fine-tune an open model against them, then wrap the whole thing in retrieval and
+agents.
 
 The point is the experiments, not the leaderboard. Every stage has knobs worth turning, and every
 model is scored by the same `Report`, so anything you try is directly comparable to everything else.
@@ -40,11 +40,18 @@ pricer/
   curate.py     deduplicate, balance the log-price distribution, split
   evaluator.py  Report / Tester: MAE, RMSLE, R2, hit rate, charts, results.json leaderboard
   baselines.py  the classical ladder
-  llm.py        one OpenAI-compatible client for Groq / OpenAI / Ollama
+  llm.py        one OpenAI-compatible client, plus the rate limiter every LLM call goes through
   tasting.py    LLM extraction pass: tasting note -> structured sommelier features + summary
-notebooks/      the same material with charts, one notebook per stage
+  prompts.py    the one canonical prompt layout, shared by training and inference
+  vectors.py    Chroma store over the tasting notes, for retrieval
+  deals.py      the wine-press RSS feeds the scanner reads
+  agents/       classical, neighbours, frontier (RAG), specialist (QLoRA), ensemble,
+                scanner, messaging, planning
+app.py          the Gradio front end
+notebooks/      1_curate_and_explore, 2_baseline_ladder, 3_prompts_and_tokens,
+                4_qlora_finetune_colab, 5_retrieval_and_rag, 6_agent_framework
 scripts/        the same material as CLIs, for long runs
-tests/          the pipeline invariants: parsing rules, leakage, balance, split, metrics
+tests/          the pipeline invariants: parsing rules, leakage, balance, split, metrics, agents
 ```
 
 ## Running it
@@ -56,13 +63,27 @@ uv run python scripts/baselines.py             # fits the ladder, writes results
 uv run pytest
 ```
 
-Then open `notebooks/week6_curate.ipynb` and `notebooks/week6_baselines.ipynb`.
+Then open `notebooks/1_curate_and_explore.ipynb` and `notebooks/2_baseline_ladder.ipynb`.
 
-The LLM pass needs a key in `.env` (copy `.env.example`):
+Anything that talks to a model needs a key in `.env` (copy `.env.example`):
 
 ```bash
-uv run python scripts/tasting.py --splits test validation   # cheap; the train split is the long one
+uv run python scripts/tasting.py --splits test          # structured features from each note
+uv run python scripts/vectors.py                       # embeds 49,895 notes into Chroma, ~2 min
+uv run python scripts/plan.py --pricer classical       # scan the wine press and price what it finds
+uv run python app.py                                   # the Gradio app on :7860
 ```
+
+The fine-tune itself runs in Colab: `notebooks/4_qlora_finetune_colab.ipynb` (4-bit Qwen2.5-3B + LoRA).
+`notebooks/3_prompts_and_tokens.ipynb` builds the prompts and pushes the dataset to the Hub first.
+
+**Budget the free Groq tier before planning any LLM experiment.** It allows 8,000 tokens a minute and
+**200,000 a day**, which works out at roughly six wines a minute and a few hundred wines a day. So:
+the tasting-note pass over all 49,895 training wines is months on the free tier, and any evaluation
+of the frontier agent is a sample of a hundred-odd wines, not the full test split. `pricer/llm.py`
+paces calls against the per-minute budget instead of failing, raises `DailyLimitReached` when the
+daily one is gone (no amount of retrying fixes that), and `scripts/tasting.py` resumes, so long runs
+can be interrupted and restarted the next day. A paid tier removes all of this.
 
 ## Metrics
 
@@ -82,27 +103,56 @@ Where the classical ladder lands today, on the 2,000-wine test split:
 
 That TF-IDF row is the number to beat.
 
+The retrieval and LLM agents are scored on a 100-wine sample of the same split (the frontier agent costs a network
+call per wine), so read them against each other rather than against the rows above:
+
+| agent | MAE | RMSLE | hits | n |
+| --- | --- | --- | --- | --- |
+| Classical, note only | $21.36 | **0.548** | 49.0% | 100 |
+| Neighbours, retrieval only (k=8) | $23.94 | 0.663 | 41.0% | 100 |
+| Frontier (RAG + LLM) | — | — | — | daily token budget spent; rerun tomorrow |
+
+Two lessons already: retrieval on its own beats guessing the mean but loses to bag-of-words, and the
+note-only model matters — serving the metadata-aware pipeline a note with `variety='unknown'` scored
+0.710 instead of 0.548. Fitting a model on features you cannot supply at inference costs more than
+the features are worth.
+
 ## Experiments to try
 
-**Data (week 6)**
+**Data and curation**
 - Re-curate at `cap=20_000` (closer to the raw distribution) and compare RMSLE on the expensive half
   of the test set. Does the extra volume help, or just re-teach the prior?
 - Add `points` to the composed text and measure the jump. That gap is the value of the critic score.
 - Predict `points` instead of `price` — same harness, far less skew.
 - Dedup harder: near-duplicate notes (same winery, one word changed) still leak.
 
-**Models (week 7)**
+**Models and fine-tuning**
 - Fine-tune an open 7-8B model with QLoRA on the tasting-note prompts and put it on the same
   leaderboard.
 - Full note vs. the LLM-extracted summary as the input — is the flowery prose worth its tokens?
 - Frontier models zero-shot, few-shot, and with retrieved neighbours, for the price of a few cents.
 
-**Agents (week 8)**
-- RAG over the tasting notes: retrieve the 5 nearest notes and their prices, and let a frontier model
-  reason from the comparables.
-- Ensemble the specialist, the frontier model, and the retrieval model with a linear blend.
+**Retrieval and agents**
+- Sweep `k` in `NeighboursAgent`, and weight the neighbours by similarity rather than flat.
+- Retrieve on the LLM summary instead of the full note and see which finds better comparables.
+- Add the fine-tuned specialist to the ensemble and refit the blend — does it dominate the others?
+- Have the frontier agent return a range and feed its width to the blend as an uncertainty feature.
 - A "sommelier" agent that goes the other way: given a budget and a mood, recommend a bottle.
+
+### Where the scanner's wines come from
+
+There is no free live wine-price API, and the deal aggregators carry almost no wine (checked:
+dealnews' grocery feeds are 25 items of camping gear). What does exist is the wine press —
+[Wine Enthusiast](https://www.wineenthusiast.com/feed/) and [Decanter](https://www.decanter.com/feed/)
+publish round-ups that quote a tasting note *and* a shelf price, which is exactly the pair this
+project needs. `pricer/deals.py` fetches those, and the scanner agent structures them with an LLM.
+
+They are editorial, so expect one or two priced wines per handful of articles, and expect the
+occasional $22,500 auction lot — the planner drops anything outside the $4-$500 range the models were
+trained on, because an estimate for it would be meaningless.
 
 ## Status
 
-Week 6 is done and tested. Weeks 7 and 8 are next; see the repo's task list in the PR description.
+Every stage above is built and tested end to end, apart from the QLoRA fine-tune itself, which needs a GPU:
+run `notebooks/4_qlora_finetune_colab.ipynb` in Colab, push the adapter, and `SpecialistAgent` picks it up
+(set `WINE_ADAPTER` if you name it something else).

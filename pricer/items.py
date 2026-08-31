@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Self
 
-from datasets import Dataset, DatasetDict, load_dataset, load_from_disk
+from datasets import Dataset, DatasetDict, Features, Value, load_dataset, load_from_disk
 from pydantic import BaseModel
 
 QUESTION = "How much does this bottle of wine cost, to the nearest dollar?"
@@ -11,6 +11,29 @@ PREFIX = "Price is $"
 # Anchored to the repo, not the working directory, so notebooks and scripts read the same cache.
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data" / "curated"
+
+# Declared rather than inferred: a split where every `summary` is still None infers as null, and then
+# the splits disagree and the Hub push refuses them.
+FEATURES = Features(
+    {
+        "description": Value("string"),
+        "price": Value("float64"),
+        "points": Value("int64"),
+        "variety": Value("string"),
+        "country": Value("string"),
+        "province": Value("string"),
+        "region": Value("string"),
+        "winery": Value("string"),
+        "designation": Value("string"),
+        "vintage": Value("int64"),
+        "taster": Value("string"),
+        "title": Value("string"),
+        "full": Value("string"),
+        "summary": Value("string"),
+        "prompt": Value("string"),
+        "id": Value("int64"),
+    }
+)
 
 
 class Wine(BaseModel):
@@ -46,11 +69,10 @@ class Wine(BaseModel):
         parts = [str(self.vintage) if self.vintage else None, self.winery, self.variety]
         return " ".join(p for p in parts if p) or self.description[:40]
 
-    def make_prompt(self, text: str) -> None:
-        self.prompt = f"{QUESTION}\n\n{text}\n\n{PREFIX}{round(self.price)}.00"
-
     def test_prompt(self) -> str:
-        """The prompt with the answer removed, for inference."""
+        """The stored training prompt with the answer removed, for inference."""
+        if not self.prompt:
+            raise ValueError(f"Wine {self.id} has no prompt -- run pricer.prompts.prepare first")
         return self.prompt.split(PREFIX)[0] + PREFIX
 
     def __repr__(self) -> str:
@@ -60,9 +82,9 @@ class Wine(BaseModel):
     def to_dataset_dict(train: list[Self], val: list[Self], test: list[Self]) -> DatasetDict:
         return DatasetDict(
             {
-                "train": Dataset.from_list([wine.model_dump() for wine in train]),
-                "validation": Dataset.from_list([wine.model_dump() for wine in val]),
-                "test": Dataset.from_list([wine.model_dump() for wine in test]),
+                "train": Dataset.from_list([w.model_dump() for w in train], features=FEATURES),
+                "validation": Dataset.from_list([w.model_dump() for w in val], features=FEATURES),
+                "test": Dataset.from_list([w.model_dump() for w in test], features=FEATURES),
             }
         )
 
@@ -75,8 +97,15 @@ class Wine(BaseModel):
         )
 
     @staticmethod
-    def push_to_hub(dataset_name: str, train: list[Self], val: list[Self], test: list[Self]) -> None:
-        Wine.to_dataset_dict(train, val, test).push_to_hub(dataset_name)
+    def push_to_hub(
+        dataset_name: str,
+        train: list[Self],
+        val: list[Self],
+        test: list[Self],
+        private: bool = True,
+    ) -> None:
+        """Private by default: the tasting notes are Wine Enthusiast's, not ours to republish."""
+        Wine.to_dataset_dict(train, val, test).push_to_hub(dataset_name, private=private)
 
     @classmethod
     def from_hub(cls, dataset_name: str) -> tuple[list[Self], list[Self], list[Self]]:
