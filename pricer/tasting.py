@@ -1,6 +1,6 @@
 """LLM preprocessing: turn a flowery tasting note into structured sommelier features.
 
-Week 6 in the course uses an LLM to clean up messy product text. Wine tasting notes are already clean
+The course uses an LLM to clean up messy product text. Wine tasting notes are already clean
 prose, so the interesting pass here is the opposite direction -- *extraction*: read the note and score
 the handful of dimensions a sommelier would actually use to place a bottle in a price bracket, plus a
 one-line summary short enough to fine-tune on.

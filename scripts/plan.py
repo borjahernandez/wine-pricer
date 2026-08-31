@@ -25,7 +25,7 @@ def build_pricer(kind: str):
     if kind == "frontier":
         return FrontierAgent()
     ensemble = EnsembleAgent([classical, NeighboursAgent(), FrontierAgent()])
-    ensemble.load()  # written by notebooks/week8_agents.ipynb
+    ensemble.load()  # written by notebooks/6_agent_framework.ipynb
     return ensemble
 
 

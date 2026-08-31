@@ -12,10 +12,10 @@ import nbformat
 
 NOTEBOOKS = Path("notebooks")
 
-WEEK6 = [
+CURATION = [
     (
         "md",
-        """# Week 6, day 1 -- meet the wines
+        """# Meet the wines: curation and exploration
 
 Goal: understand the raw data well enough to know what a good price prediction would even mean.
 
@@ -177,17 +177,17 @@ Wine.save_local(train=train, val=val, test=test)""",
     (
         "md",
         """Next: `scripts/baselines.py` fits the classical ladder on this cache, and
-`notebooks/week6_baselines.ipynb` walks through what each rung is worth.""",
+`notebooks/2_baseline_ladder.ipynb` walks through what each rung is worth.""",
     ),
 ]
 
-WEEK6_BASELINES = [
+BASELINES = [
     (
         "md",
-        """# Week 6, day 2 -- the baseline ladder
+        """# The baseline ladder
 
 Before any LLM, establish what cheap models achieve. Every rung uses the same `Report`, so the
-fine-tuned model in week 7 is directly comparable.
+fine-tuned model later is directly comparable.
 
 Rungs: always-guess-the-average, metadata-only linear regression, TF-IDF + Ridge, and LSA + random
 forest.""",
@@ -253,10 +253,10 @@ for index in order[-15:][::-1]:
 ]
 
 
-WEEK7_PROMPTS = [
+PROMPTS = [
     (
         "md",
-        """# Week 7, day 1 -- prompts for the fine-tune
+        """# Prompts and token budgets for the fine-tune
 
 The fine-tune eats text, so before any GPU time: decide what the model reads, how long it may be,
 and push the result to the Hub where Colab can reach it.
@@ -342,10 +342,10 @@ tokens, so if it scores within noise of the full note, the note is mostly decora
     ),
 ]
 
-WEEK7_QLORA = [
+QLORA = [
     (
         "md",
-        """# Week 7, days 2-4 -- QLoRA fine-tune
+        """# QLoRA fine-tune
 
 **Run this in Colab on a T4 (free) or an A100.** Nothing here works on a laptop: it needs a CUDA GPU
 for 4-bit quantisation.
@@ -464,7 +464,8 @@ Two ways to read the answer out:
 2. **Weighted average over the logits** of the first answer token -- the model's whole distribution
    instead of its argmax, which is measurably better calibrated for a numeric target.
 
-Both go through `pricer.evaluator`, so the result drops straight onto the week-6 leaderboard.""",
+Both go through `pricer.evaluator`, so the result drops straight onto the same leaderboard as the
+classical baselines.""",
     ),
     (
         "code",
@@ -547,10 +548,10 @@ def build(name: str, cells: list[tuple[str, str]]) -> None:
     print(f"wrote {path} ({len(cells)} cells)")
 
 
-WEEK8_RAG = [
+RAG = [
     (
         "md",
-        """# Week 8, day 1 -- RAG over tasting notes
+        """# Retrieval and RAG over tasting notes
 
 Retrieval asks a different question from the models so far: not "what does this prose imply about
 price" but "what did wines that taste like this actually cost".
@@ -569,7 +570,7 @@ import numpy as np
 from sklearn.manifold import TSNE
 
 from pricer import vectors
-from pricer.agents import ClassicalAgent, FrontierAgent, NeighboursAgent, setup_logging
+from pricer.agents import ClassicalAgent, FrontierAgent, NeighboursAgent, price_all, setup_logging
 from pricer.evaluator import Report, leaderboard
 from pricer.items import Wine
 
@@ -619,7 +620,7 @@ the expensive part is not earning its keep.
 100 test wines, because the frontier agent goes over the network for each one. Note the sample size in
 the leaderboard: these rows are not comparable to the 2,000-wine baseline rows, only to each other.
 
-The classical agent here is the **note-only** model, not the week-6 one. An agent receives prose and
+The classical agent here is the **note-only** model, not the metadata-aware baseline. An agent receives prose and
 nothing else, so feeding the metadata-aware pipeline `variety='unknown', vintage=0` at inference --
 after fitting it on the real values -- cost about 0.2 RMSLE. Train on what you can actually serve.""",
     ),
@@ -634,8 +635,10 @@ for name, agent in [("Neighbours (k=8, retrieval only)", neighbours), ("Classica
     Report(name, [w.label for w in sample], guesses, [w.price for w in sample]).save()
 
 frontier = FrontierAgent(collection, encoder)
-guesses = [frontier.price(w.description) for w in sample]
-Report("Frontier (RAG + LLM)", [w.label for w in sample], guesses, [w.price for w in sample]).save()
+guesses = price_all(frontier, [w.description for w in sample])  # stops early if the daily quota runs out
+scored = sample[: len(guesses)]
+if scored:
+    Report("Frontier (RAG + LLM)", [w.label for w in scored], guesses, [w.price for w in scored]).save()
 leaderboard()""",
     ),
     (
@@ -652,16 +655,16 @@ leaderboard()""",
     ),
 ]
 
-WEEK8_AGENTS = [
+AGENTS = [
     (
         "md",
-        """# Week 8, days 2-5 -- the agent framework
+        """# The agent framework
 
 Five agents, each with one job, wired into a pipeline that goes from an RSS feed to a notification:
 
 | agent | what it does |
 | --- | --- |
-| `ClassicalAgent` | the week-6 TF-IDF + Ridge model, cheap and offline |
+| `ClassicalAgent` | the baseline TF-IDF + Ridge model, cheap and offline |
 | `NeighboursAgent` | retrieval only: the geometric mean of comparable prices |
 | `FrontierAgent` | RAG plus a language model |
 | `SpecialistAgent` | our own QLoRA fine-tune (needs a GPU, so not run here) |
@@ -679,6 +682,7 @@ from pricer.agents import (
     NeighboursAgent,
     PlanningAgent,
     ScannerAgent,
+    price_all,
     setup_logging,
 )
 from pricer.evaluator import Report, leaderboard
@@ -695,7 +699,8 @@ members = [ClassicalAgent(), NeighboursAgent(collection, encoder), FrontierAgent
 
 On **validation**, never on train: the classical member was fitted on train and the retrieval members
 can find train wines verbatim, so their training-set accuracy is fantasy. 150 wines is enough for
-five coefficients and keeps the frontier agent's bill small.""",
+five coefficients and keeps the frontier agent's bill small -- and 150 frontier calls is already most
+of a free tier's day, so drop it further if you are counting tokens.""",
     ),
     (
         "code",
@@ -708,8 +713,10 @@ ensemble.price(test[0].description), test[0].price""",
     (
         "code",
         """sample = test[:100]
-guesses = [ensemble.price(w.description) for w in sample]
-Report("Ensemble", [w.label for w in sample], guesses, [w.price for w in sample]).save()
+guesses = price_all(ensemble, [w.description for w in sample])
+scored = sample[: len(guesses)]
+if scored:
+    Report("Ensemble", [w.label for w in scored], guesses, [w.price for w in scored]).save()
 leaderboard()""",
     ),
     (
@@ -763,9 +770,9 @@ for opportunity in opportunities[:10]:
 
 
 if __name__ == "__main__":
-    build("week6_curate.ipynb", WEEK6)
-    build("week6_baselines.ipynb", WEEK6_BASELINES)
-    build("week7_prompts.ipynb", WEEK7_PROMPTS)
-    build("week7_qlora_colab.ipynb", WEEK7_QLORA)
-    build("week8_rag.ipynb", WEEK8_RAG)
-    build("week8_agents.ipynb", WEEK8_AGENTS)
+    build("1_curate_and_explore.ipynb", CURATION)
+    build("2_baseline_ladder.ipynb", BASELINES)
+    build("3_prompts_and_tokens.ipynb", PROMPTS)
+    build("4_qlora_finetune_colab.ipynb", QLORA)
+    build("5_retrieval_and_rag.ipynb", RAG)
+    build("6_agent_framework.ipynb", AGENTS)

@@ -1,8 +1,8 @@
-"""Week 6 day 1, as a script: load the raw reviews, clean them, balance the prices, split, cache.
+"""Curation as a script: load the raw reviews, clean them, balance the prices, split, cache.
 
     uv run python scripts/curate.py --cap 6000
 
-The notebook `notebooks/week6_curate.ipynb` walks through the same steps with the charts.
+The notebook `notebooks/1_curate_and_explore.ipynb` walks through the same steps with the charts.
 """
 
 import argparse
