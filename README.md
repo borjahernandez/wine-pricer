@@ -40,11 +40,17 @@ pricer/
   curate.py     deduplicate, balance the log-price distribution, split
   evaluator.py  Report / Tester: MAE, RMSLE, R2, hit rate, charts, results.json leaderboard
   baselines.py  the classical ladder
-  llm.py        one OpenAI-compatible client for Groq / OpenAI / Ollama
+  llm.py        one OpenAI-compatible client, plus the rate limiter every LLM call goes through
   tasting.py    LLM extraction pass: tasting note -> structured sommelier features + summary
+  prompts.py    the one canonical prompt layout, shared by training and inference
+  vectors.py    Chroma store over the tasting notes, for retrieval
+  deals.py      the wine-press RSS feeds the scanner reads
+  agents/       classical, neighbours, frontier (RAG), specialist (QLoRA), ensemble,
+                scanner, messaging, planning
+app.py          the Gradio front end
 notebooks/      the same material with charts, one notebook per stage
 scripts/        the same material as CLIs, for long runs
-tests/          the pipeline invariants: parsing rules, leakage, balance, split, metrics
+tests/          the pipeline invariants: parsing rules, leakage, balance, split, metrics, agents
 ```
 
 ## Running it
@@ -58,11 +64,22 @@ uv run pytest
 
 Then open `notebooks/week6_curate.ipynb` and `notebooks/week6_baselines.ipynb`.
 
-The LLM pass needs a key in `.env` (copy `.env.example`):
+Anything that talks to a model needs a key in `.env` (copy `.env.example`):
 
 ```bash
-uv run python scripts/tasting.py --splits test validation   # cheap; the train split is the long one
+uv run python scripts/tasting.py --splits test          # structured features from each note
+uv run python scripts/vectors.py                       # embeds 49,895 notes into Chroma, ~2 min
+uv run python scripts/plan.py --pricer classical       # scan the wine press and price what it finds
+uv run python app.py                                   # the Gradio app on :7860
 ```
+
+The fine-tune itself runs in Colab: `notebooks/week7_qlora_colab.ipynb` (4-bit Qwen2.5-3B + LoRA).
+`notebooks/week7_prompts.ipynb` builds the prompts and pushes the dataset to the Hub first.
+
+A note on the free Groq tier: 8,000 tokens per minute, which is roughly **six wines a minute**. A
+full pass over the 49,895 training notes is days, so the LLM-summary ablation is a subset experiment
+unless you pay for a higher tier. `pricer/llm.py` paces every call against that budget rather than
+failing, and `scripts/tasting.py` is resumable, so long runs can be interrupted freely.
 
 ## Metrics
 
@@ -98,11 +115,26 @@ That TF-IDF row is the number to beat.
 - Frontier models zero-shot, few-shot, and with retrieved neighbours, for the price of a few cents.
 
 **Agents (week 8)**
-- RAG over the tasting notes: retrieve the 5 nearest notes and their prices, and let a frontier model
-  reason from the comparables.
-- Ensemble the specialist, the frontier model, and the retrieval model with a linear blend.
+- Sweep `k` in `NeighboursAgent`, and weight the neighbours by similarity rather than flat.
+- Retrieve on the LLM summary instead of the full note and see which finds better comparables.
+- Add the fine-tuned specialist to the ensemble and refit the blend — does it dominate the others?
+- Have the frontier agent return a range and feed its width to the blend as an uncertainty feature.
 - A "sommelier" agent that goes the other way: given a budget and a mood, recommend a bottle.
+
+### Where the scanner's wines come from
+
+There is no free live wine-price API, and the deal aggregators carry almost no wine (checked:
+dealnews' grocery feeds are 25 items of camping gear). What does exist is the wine press —
+[Wine Enthusiast](https://www.wineenthusiast.com/feed/) and [Decanter](https://www.decanter.com/feed/)
+publish round-ups that quote a tasting note *and* a shelf price, which is exactly the pair this
+project needs. `pricer/deals.py` fetches those, and the scanner agent structures them with an LLM.
+
+They are editorial, so expect one or two priced wines per handful of articles, and expect the
+occasional $22,500 auction lot — the planner drops anything outside the $4-$500 range the models were
+trained on, because an estimate for it would be meaningless.
 
 ## Status
 
-Week 6 is done and tested. Weeks 7 and 8 are next; see the repo's task list in the PR description.
+Weeks 6-8 are built and tested end to end, apart from the QLoRA fine-tune itself, which needs a GPU:
+run `notebooks/week7_qlora_colab.ipynb` in Colab, push the adapter, and `SpecialistAgent` picks it up
+(set `WINE_ADAPTER` if you name it something else).

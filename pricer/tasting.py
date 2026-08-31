@@ -16,8 +16,6 @@ interrupted pass (or an exhausted rate limit) picks up where it stopped.
 """
 
 import json
-import re
-import time
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -28,13 +26,12 @@ from pydantic import BaseModel, Field, ValidationError
 from tqdm.auto import tqdm
 
 from pricer.items import ROOT, Wine
-from pricer.llm import client_for
+from pricer.llm import TPM, Limiter, chat, client_for
 
 CACHE_DIR = ROOT / "data" / "tasting"
 WORKERS = 4
-ATTEMPTS = 8
-BACKOFF = 5.0  # seconds, when the provider does not say how long to wait
-RETRY_AFTER = re.compile(r"try again in ([\d.]+)s")
+MAX_TOKENS = 300
+VALIDATION_ATTEMPTS = 3
 DIMENSIONS = ("fruit", "oak", "tannin", "acidity", "body", "finish")
 
 SYSTEM = (
@@ -107,32 +104,30 @@ def load_cache(split: str) -> dict[int, Tasting]:
     return done
 
 
-def extract(note: str, client: OpenAI, model: str) -> Tasting:
-    """One call, retried: free tiers rate-limit hard and small models sometimes wrap JSON in prose.
+def extract(note: str, client: OpenAI, model: str, limiter: Limiter | None = None) -> Tasting:
+    """One structured reading of one note.
 
-    A 429 usually names the wait in its message, so honour that rather than guessing.
+    `chat` handles rate limits and transport errors; the retry here is for the other failure mode, a
+    small model that returns JSON in the wrong shape.
     """
-    last_error: Exception | None = None
-    for attempt in range(ATTEMPTS):
+    last_error: ValidationError | None = None
+    for _ in range(VALIDATION_ATTEMPTS):
+        reply = chat(
+            client,
+            model,
+            [{"role": "system", "content": SYSTEM}, {"role": "user", "content": INSTRUCTION.format(note=note)}],
+            max_tokens=MAX_TOKENS,
+            limiter=limiter,
+            response_format={"type": "json_object"},
+            temperature=0,
+            # gpt-oss models think before answering; this is pure extraction, so keep it brief
+            extra_body={"reasoning_effort": "low"},
+        )
         try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": SYSTEM},
-                    {"role": "user", "content": INSTRUCTION.format(note=note)},
-                ],
-                response_format={"type": "json_object"},
-                temperature=0,
-                max_tokens=400,
-                # gpt-oss models think before answering; this is pure extraction, so keep it brief
-                extra_body={"reasoning_effort": "low"},
-            )
-            return Tasting.model_validate_json(response.choices[0].message.content)
-        except Exception as error:  # noqa: BLE001 -- retry anything: rate limits, bad JSON, timeouts
+            return Tasting.model_validate_json(reply)
+        except ValidationError as error:
             last_error = error
-            match = RETRY_AFTER.search(str(error))
-            time.sleep(float(match.group(1)) + 0.5 if match else BACKOFF * (attempt + 1))
-    raise RuntimeError(f"Extraction failed after {ATTEMPTS} attempts: {last_error}")
+    raise RuntimeError(f"Could not parse a Tasting after {VALIDATION_ATTEMPTS} replies: {last_error}")
 
 
 def run(
@@ -142,6 +137,7 @@ def run(
     model: str | None = None,
     workers: int = WORKERS,
     limit: int | None = None,
+    tokens_per_minute: int = TPM,
 ) -> dict[int, Tasting]:
     """Extract features for every wine in `wines`, skipping ids already in the cache."""
     client, default_model = client_for(provider)
@@ -153,17 +149,26 @@ def run(
         return done
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    limiter = Limiter(tokens_per_minute)
     lock = Lock()
     with open(cache_path(split), "a") as handle, ThreadPoolExecutor(max_workers=workers) as pool:
+        failures: list[int] = []
 
         def process(wine: Wine) -> None:
-            tasting = extract(wine.description, client, model)
+            # One stubborn row must not kill a multi-hour pass; rerun the script to retry it.
+            try:
+                tasting = extract(wine.description, client, model, limiter)
+            except RuntimeError:
+                failures.append(wine.id)
+                return
             with lock:
                 handle.write(json.dumps({"id": wine.id, "tasting": tasting.model_dump()}) + "\n")
                 handle.flush()
             done[wine.id] = tasting
 
         list(tqdm(pool.map(process, todo), total=len(todo), desc=split))
+    if failures:
+        print(f"{split}: {len(failures):,} rows failed and stayed uncached; rerun to retry them")
     return done
 
 
