@@ -1,6 +1,9 @@
 """The base every agent shares: a name, a colour, and a log line you can follow in the terminal."""
 
 import logging
+from collections.abc import Sequence
+
+from pricer.llm import DailyLimitReached
 
 
 class Agent:
@@ -15,6 +18,22 @@ class Agent:
 
     def price(self, text: str) -> float:
         raise NotImplementedError
+
+
+def price_all(agent: Agent, texts: Sequence[str]) -> list[float]:
+    """Price as many as the provider's daily allowance permits, then stop and return those.
+
+    A free tier runs out mid-evaluation, and losing ninety finished estimates to the ninety-first
+    call is worse than scoring ninety. Callers align their labels with `len()` of the result.
+    """
+    guesses: list[float] = []
+    for text in texts:
+        try:
+            guesses.append(agent.price(text))
+        except DailyLimitReached as spent:
+            agent.log(f"Stopping at {len(guesses)} of {len(texts)}: {spent}")
+            break
+    return guesses
 
 
 def setup_logging(level: int = logging.INFO) -> None:

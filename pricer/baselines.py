@@ -140,7 +140,7 @@ def tfidf(train: Sequence[Wine], max_features: int = 40_000) -> Model:
 def tfidf_text(train: Sequence[Wine], max_features: int = 40_000) -> Model:
     """The same rung with the note as its only input, for callers who only ever have prose.
 
-    The agents in week 8 are handed a tasting note and nothing else. Serving them the metadata-aware
+    The agents are handed a tasting note and nothing else. Serving them the metadata-aware
     model means fitting on real varieties and regions and then predicting with 'unknown' for all of
     them -- a train/serve skew that cost about 0.2 RMSLE when measured. Better to fit the model that
     matches what the caller can actually supply.

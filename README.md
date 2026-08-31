@@ -2,9 +2,9 @@
 
 *How much is that bottle?* Given a tasting note and a little geography, predict the price.
 
-A playground built along the lines of weeks 6-8 of Ed Donner's LLM engineering course, but on wine
-reviews instead of Amazon products: curate a big messy dataset, establish classical baselines,
-fine-tune an open model against them, then wrap the whole thing in retrieval and agents.
+A playground for LLM engineering on real, messy data: curate a big scraped dataset, establish
+classical baselines, fine-tune an open model against them, then wrap the whole thing in retrieval and
+agents.
 
 The point is the experiments, not the leaderboard. Every stage has knobs worth turning, and every
 model is scored by the same `Report`, so anything you try is directly comparable to everything else.
@@ -48,7 +48,8 @@ pricer/
   agents/       classical, neighbours, frontier (RAG), specialist (QLoRA), ensemble,
                 scanner, messaging, planning
 app.py          the Gradio front end
-notebooks/      the same material with charts, one notebook per stage
+notebooks/      1_curate_and_explore, 2_baseline_ladder, 3_prompts_and_tokens,
+                4_qlora_finetune_colab, 5_retrieval_and_rag, 6_agent_framework
 scripts/        the same material as CLIs, for long runs
 tests/          the pipeline invariants: parsing rules, leakage, balance, split, metrics, agents
 ```
@@ -62,7 +63,7 @@ uv run python scripts/baselines.py             # fits the ladder, writes results
 uv run pytest
 ```
 
-Then open `notebooks/week6_curate.ipynb` and `notebooks/week6_baselines.ipynb`.
+Then open `notebooks/1_curate_and_explore.ipynb` and `notebooks/2_baseline_ladder.ipynb`.
 
 Anything that talks to a model needs a key in `.env` (copy `.env.example`):
 
@@ -73,8 +74,8 @@ uv run python scripts/plan.py --pricer classical       # scan the wine press and
 uv run python app.py                                   # the Gradio app on :7860
 ```
 
-The fine-tune itself runs in Colab: `notebooks/week7_qlora_colab.ipynb` (4-bit Qwen2.5-3B + LoRA).
-`notebooks/week7_prompts.ipynb` builds the prompts and pushes the dataset to the Hub first.
+The fine-tune itself runs in Colab: `notebooks/4_qlora_finetune_colab.ipynb` (4-bit Qwen2.5-3B + LoRA).
+`notebooks/3_prompts_and_tokens.ipynb` builds the prompts and pushes the dataset to the Hub first.
 
 **Budget the free Groq tier before planning any LLM experiment.** It allows 8,000 tokens a minute and
 **200,000 a day**, which works out at roughly six wines a minute and a few hundred wines a day. So:
@@ -102,7 +103,7 @@ Where the classical ladder lands today, on the 2,000-wine test split:
 
 That TF-IDF row is the number to beat.
 
-The week-8 agents are scored on a 100-wine sample of the same split (the frontier agent costs a network
+The retrieval and LLM agents are scored on a 100-wine sample of the same split (the frontier agent costs a network
 call per wine), so read them against each other rather than against the rows above:
 
 | agent | MAE | RMSLE | hits | n |
@@ -118,20 +119,20 @@ the features are worth.
 
 ## Experiments to try
 
-**Data (week 6)**
+**Data and curation**
 - Re-curate at `cap=20_000` (closer to the raw distribution) and compare RMSLE on the expensive half
   of the test set. Does the extra volume help, or just re-teach the prior?
 - Add `points` to the composed text and measure the jump. That gap is the value of the critic score.
 - Predict `points` instead of `price` — same harness, far less skew.
 - Dedup harder: near-duplicate notes (same winery, one word changed) still leak.
 
-**Models (week 7)**
+**Models and fine-tuning**
 - Fine-tune an open 7-8B model with QLoRA on the tasting-note prompts and put it on the same
   leaderboard.
 - Full note vs. the LLM-extracted summary as the input — is the flowery prose worth its tokens?
 - Frontier models zero-shot, few-shot, and with retrieved neighbours, for the price of a few cents.
 
-**Agents (week 8)**
+**Retrieval and agents**
 - Sweep `k` in `NeighboursAgent`, and weight the neighbours by similarity rather than flat.
 - Retrieve on the LLM summary instead of the full note and see which finds better comparables.
 - Add the fine-tuned specialist to the ensemble and refit the blend — does it dominate the others?
@@ -152,6 +153,6 @@ trained on, because an estimate for it would be meaningless.
 
 ## Status
 
-Weeks 6-8 are built and tested end to end, apart from the QLoRA fine-tune itself, which needs a GPU:
-run `notebooks/week7_qlora_colab.ipynb` in Colab, push the adapter, and `SpecialistAgent` picks it up
+Every stage above is built and tested end to end, apart from the QLoRA fine-tune itself, which needs a GPU:
+run `notebooks/4_qlora_finetune_colab.ipynb` in Colab, push the adapter, and `SpecialistAgent` picks it up
 (set `WINE_ADAPTER` if you name it something else).

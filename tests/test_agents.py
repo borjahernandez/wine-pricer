@@ -1,4 +1,4 @@
-"""Tests for the week-8 pieces that can be checked without a network, a GPU or an API key.
+"""Tests for the agent and RAG pieces that can be checked without a network, a GPU or an API key.
 
 The agents themselves are thin wrappers around services; what is worth testing is the logic around
 them -- the rate limiter, the out-of-range guard, the blend, and the parsing of scanned wines.
@@ -9,7 +9,7 @@ import time
 import pytest
 from pydantic import ValidationError
 
-from pricer.agents.agent import Agent
+from pricer.agents.agent import Agent, price_all
 from pricer.agents.ensemble import EnsembleAgent
 from pricer.agents.planning import Opportunity, PlanningAgent
 from pricer.agents.scanner import Listing
@@ -106,6 +106,17 @@ class TestPlanning:
         opportunity = Opportunity(listing=Listing(name="w", note=NOTE, price=30.0), estimate=45.0)
         assert opportunity.discount == pytest.approx(15.0)
         assert "$+15" in opportunity.summary()
+
+
+class TestPriceAll:
+    def test_a_spent_quota_keeps_the_estimates_already_made(self):
+        class Fails(Fixed):
+            def price(self, text: str) -> float:
+                if len(text) > 1:
+                    raise DailyLimitReached("spent")
+                return self.guess
+
+        assert price_all(Fails("flaky", 10.0), ["a", "b", "cc", "d"]) == [10.0, 10.0]
 
 
 class TestEnsemble:

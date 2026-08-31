@@ -1,6 +1,6 @@
-"""Week 8: the agents. Import the ones you need -- `specialist` pulls in torch, the rest do not."""
+"""The agents. Import the ones you need -- `specialist` pulls in torch, the rest do not."""
 
-from pricer.agents.agent import Agent, setup_logging
+from pricer.agents.agent import Agent, price_all, setup_logging
 from pricer.agents.classical import ClassicalAgent
 from pricer.agents.ensemble import EnsembleAgent
 from pricer.agents.frontier import FrontierAgent
@@ -20,5 +20,6 @@ __all__ = [
     "Opportunity",
     "PlanningAgent",
     "ScannerAgent",
+    "price_all",
     "setup_logging",
 ]

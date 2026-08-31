@@ -1,6 +1,6 @@
 """The specialist: our own QLoRA fine-tune, loaded locally.
 
-Needs a CUDA GPU and an adapter produced by `notebooks/week7_qlora_colab.ipynb`. On a CPU-only box
+Needs a CUDA GPU and an adapter produced by `notebooks/4_qlora_finetune_colab.ipynb`. On a CPU-only box
 this raises immediately rather than pretending -- use `ClassicalAgent` there instead.
 """
 

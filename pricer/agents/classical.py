@@ -1,4 +1,4 @@
-"""The classical agent: the week-6 TF-IDF + Ridge model, cached to disk so the app starts fast.
+"""The classical agent: the baseline TF-IDF + Ridge model, cached to disk so the app starts fast.
 
 The note-only variant, because an agent is handed prose and nothing else -- see `baselines.tfidf_text`
 for why serving the metadata-aware model here would quietly cost accuracy. It is the cheapest member
