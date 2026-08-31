@@ -2,7 +2,7 @@
 
     uv run python scripts/curate.py --cap 6000
 
-The notebook `notebooks/01_curate.ipynb` walks through the same steps with the charts.
+The notebook `notebooks/week6_curate.ipynb` walks through the same steps with the charts.
 """
 
 import argparse
@@ -28,7 +28,7 @@ def main() -> None:
     price_histogram(sample)
 
     train, val, test = split(sample)
-    Wine.save_local(args.out, train, val, test)
+    Wine.save_local(train, val, test, path=args.out)
     print(f"\nCached to {args.out}")
 
     if args.push:

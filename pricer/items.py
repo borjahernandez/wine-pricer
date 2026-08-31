@@ -8,7 +8,9 @@ from pydantic import BaseModel
 
 QUESTION = "How much does this bottle of wine cost, to the nearest dollar?"
 PREFIX = "Price is $"
-DATA_DIR = Path("data/curated")
+# Anchored to the repo, not the working directory, so notebooks and scripts read the same cache.
+ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = ROOT / "data" / "curated"
 
 
 class Wine(BaseModel):
@@ -81,7 +83,7 @@ class Wine(BaseModel):
         return cls.from_dataset_dict(load_dataset(dataset_name))
 
     @staticmethod
-    def save_local(path: str | Path, train: list[Self], val: list[Self], test: list[Self]) -> None:
+    def save_local(train: list[Self], val: list[Self], test: list[Self], path: str | Path = DATA_DIR) -> None:
         """Cache the curated splits on disk, so the baselines can run without a Hub round-trip."""
         Wine.to_dataset_dict(train, val, test).save_to_disk(str(path))
 
