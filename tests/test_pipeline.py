@@ -140,6 +140,14 @@ class TestPrompts:
         assert item.test_prompt() == prompts.for_inference(item)
         assert "42.00" not in item.test_prompt()
 
+    def test_completion_holds_the_answer_and_the_prompt_stops_at_the_prefix(self):
+        item = parse(row())
+        prompts.prepare([item])
+        pair = prompts.as_completion(item.prompt)
+        assert pair["prompt"] == item.test_prompt()
+        assert pair["completion"] == "42.00"
+        assert pair["prompt"] + pair["completion"] == item.prompt
+
     def test_summary_input_needs_a_summary(self):
         item = parse(row())
         with pytest.raises(ValueError):
