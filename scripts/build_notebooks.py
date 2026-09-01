@@ -21,7 +21,11 @@ Goal: understand the raw data well enough to know what a good price prediction w
 
 The dataset is [`spawn99/wine-reviews`](https://huggingface.co/datasets/spawn99/wine-reviews):
 Wine Enthusiast tasting notes with a critic score (`points`), a price, and geography. Two Kaggle
-scrapes merged together, so expect duplicates and missing prices.""",
+scrapes merged together, so expect duplicates and missing prices.
+
+Its train/validation/test split is one arbitrary partition of that single scrape, so all three are
+concatenated here and re-split at the end -- otherwise a third of the reviews go unused, and
+duplicate notes spanning the upstream splits survive deduplication.""",
     ),
     (
         "code",
@@ -29,14 +33,14 @@ scrapes merged together, so expect duplicates and missing prices.""",
 
 import matplotlib.pyplot as plt
 import numpy as np
-from datasets import load_dataset
+from datasets import concatenate_datasets, load_dataset
 
-from pricer.curate import balance, deduplicate, price_histogram, split
+from pricer.curate import balance, deduplicate, holdout, price_histogram
 from pricer.items import Wine
 from pricer.loaders import RAW_DATASET
 from pricer.parser import compose, parse
 
-raw = load_dataset(RAW_DATASET, split="train")
+raw = concatenate_datasets(list(load_dataset(RAW_DATASET).values()))
 raw""",
     ),
     ("md", "### One row, in full"),
@@ -144,36 +148,36 @@ plt.show()""",
     ),
     (
         "md",
-        """### Balancing
+        """### Hold out the test set first, then balance
 
 Trained on the raw distribution a model learns that guessing \\$25 is nearly always safe. Capping how
 many wines each log-price bin may contribute flattens the target and forces the model to read.
 
+Order matters. Validation and test come out of the deduplicated pool *before* balancing, so the cap
+only ever changes the training set -- balance first and every cap would be scored on a differently
+shaped test set, mixing "more data" with "easier exam". The unbalanced test set is also the honest
+one: wines in a shop are not uniform in price.
+
 The trade is volume: the top bins hold only a few hundred wines each, so a *perfectly* flat set would
-be tiny. `cap=6000` keeps a bit over half the data. **Experiment:** rerun with `cap=20_000` and
-compare RMSLE on the expensive half of the test set.""",
+be tiny. `cap=10_000` keeps a bit over half the data. **Experiment:** rerun with `cap=20_000` and
+compare RMSLE on the expensive half of the test set -- now a fair comparison.""",
     ),
     ("code", "price_histogram(wines)"),
-    ("code", "balanced = balance(wines, cap=6_000)\nprice_histogram(balanced)"),
+    (
+        "code",
+        """pool, val, test = holdout(wines)
+train = balance(pool, cap=10_000)
+price_histogram(train)""",
+    ),
     ("md", "### What a model actually reads"),
-    ("code", 'print(balanced[0].full)\nprint("\\n--- price:", balanced[0].price)'),
+    ("code", 'print(train[0].full)\nprint("\\n--- price:", train[0].price)'),
     (
         "code",
         """# The same wine with the leaky fields switched on, for comparison
-print(compose(balanced[0], fields=("vintage", "variety", "country", "region", "winery", "points", "note")))""",
+print(compose(train[0], fields=("vintage", "variety", "country", "region", "winery", "points", "note")))""",
     ),
-    (
-        "md",
-        """### Split and cache
-
-Validation and test come off the end of one deterministic shuffle, so shrinking the train set for a
-quick experiment does not move the test set.""",
-    ),
-    (
-        "code",
-        """train, val, test = split(balanced)
-Wine.save_local(train=train, val=val, test=test)""",
-    ),
+    ("md", "### Cache the splits"),
+    ("code", "Wine.save_local(train=train, val=val, test=test)"),
     (
         "md",
         """Next: `scripts/baselines.py` fits the classical ladder on this cache, and
@@ -356,18 +360,27 @@ train -- about 0.5% of the parameters -- which is what makes this fit in 16GB.
 
 The library APIs here move fast, so the versions are floors rather than whatever Colab ships: `trl`
 replaced its response-template collator with prompt-completion columns, and a stale cell fails at the
-import.""",
+import.
+
+Add two Colab secrets first (key icon, left sidebar): `HF_TOKEN` from
+[huggingface.co](https://huggingface.co/settings/tokens) and `WANDB_API_KEY` from
+[wandb.ai](https://wandb.ai/authorize). The run streams to Weights & Biases, which is how you watch a
+four-hour fine-tune without leaving the tab open.""",
     ),
     (
         "code",
         """!pip install -q "transformers>=4.56.2" "peft>=0.17" "trl>=1.0" "bitsandbytes>=0.44" \\
-    "datasets>=3.0" "accelerate>=1.0"
+    "datasets>=3.0" "accelerate>=1.0" "wandb>=0.18"
 !git clone -q https://github.com/borjahernandez/wine-pricer.git
 %cd wine-pricer""",
     ),
     (
         "code",
-        """import torch
+        """import os
+from datetime import datetime
+
+import torch
+import wandb
 from datasets import load_dataset
 from google.colab import userdata
 from huggingface_hub import login
@@ -382,6 +395,13 @@ login(userdata.get("HF_TOKEN"))
 BASE_MODEL = "Qwen/Qwen2.5-3B"
 DATASET = "borjahernandez/wine-pricer"
 RUN = "wine-pricer-qwen3b"
+RUN_NAME = f"{RUN}-{datetime.now():%Y%m%d-%H%M}"  # one W&B run per attempt, so sweeps stay legible
+
+os.environ["WANDB_API_KEY"] = userdata.get("WANDB_API_KEY")
+os.environ["WANDB_PROJECT"] = "wine-pricer"
+os.environ["WANDB_LOG_MODEL"] = "false"  # adapters go to the Hub; W&B only needs the curves
+os.environ["WANDB_WATCH"] = "false"  # gradient histograms cost throughput and rarely answer anything
+wandb.login()
 """,
     ),
     (
@@ -396,7 +416,7 @@ Sensible starting points, all worth a sweep:
 | `alpha` | 64 | conventionally 2r |
 | target modules | attention projections | where the task-specific reasoning lives |
 | `lr` | 1e-4 | LoRA tolerates rates ~10x a full fine-tune |
-| epochs | 1 | 50k examples is plenty; a second epoch mostly memorises |
+| epochs | 1 | 80k examples is plenty; a second epoch mostly memorises |
 | 4-bit nf4, double quant | on | the whole reason this fits on a T4 |""",
     ),
     (
@@ -431,7 +451,8 @@ CONFIG = SFTConfig(
     save_steps=500,
     save_total_limit=2,
     bf16=True,
-    report_to="none",
+    report_to="wandb",
+    run_name=RUN_NAME,
     push_to_hub=True,
     hub_model_id=f"borjahernandez/{RUN}",
     hub_private_repo=True,
@@ -468,7 +489,24 @@ dropped = len(train) - len(trainer.train_dataset)
 assert not dropped, f"{dropped} rows exceeded max_length={CONFIG.max_length} and were dropped"
 
 trainer.train()
-trainer.push_to_hub(f"Fine-tuned on {DATASET}")""",
+trainer.push_to_hub(f"Fine-tuned on {DATASET}")
+wandb.finish()  # without this the run stays live and the summary metrics never settle""",
+    ),
+    (
+        "md",
+        """### Reading the W&B run
+
+Three charts earn their place. `train/learning_rate` is the cheapest sanity check there is -- the ramp
+should last ~3% of the steps and then decay on a cosine, which confirms the warmup fraction resolved
+against the real step count rather than being read as an absolute value. `train/loss` on a
+completion-only objective starts far lower than a full-text fine-tune, because only a handful of
+price tokens are scored per example; watch its *slope*, not its height, and expect it to flatten
+long before the epoch ends. `train/grad_norm` spiking after warmup means the learning rate is too
+high for this rank.
+
+The loss is not comparable to the baseline ladder -- that is what RMSLE on the held-out test set is
+for, below. Nor is it comparable across curations: change the cap and the training pool changes with
+it, so record which dataset a run used before trusting two loss curves side by side.""",
     ),
     (
         "md",
