@@ -122,12 +122,14 @@ call per wine), so read them against each other rather than against the rows abo
 | --- | --- | --- | --- | --- |
 | Classical, note only | $14.40 | **0.454** | 57.0% | 100 |
 | Neighbours, retrieval only (k=8) | $17.55 | 0.588 | 53.0% | 100 |
-| Frontier (RAG + LLM) | — | — | — | daily token budget spent; rerun tomorrow |
+| Frontier (RAG + LLM) | $16.79 | 0.656 | 55.0% | 100 |
 
-Two lessons already: retrieval on its own beats guessing the mean but loses to bag-of-words, and the
-note-only model matters — serving the metadata-aware pipeline a note with `variety='unknown'` cost
-about 0.16 RMSLE when measured. Fitting a model on features you cannot supply at inference costs more
-than the features are worth.
+Three lessons already: the RAG agent's dollar error beats pure retrieval while its RMSLE is worse, so
+it is closer on expensive bottles and proportionally wilder on cheap ones — exactly the trade a $30
+floor in an LLM's head produces. Retrieval on its own beats guessing the mean but loses to
+bag-of-words. And the note-only model matters: serving the metadata-aware pipeline a note with
+`variety='unknown'` cost about 0.16 RMSLE when measured. Fitting a model on features you cannot
+supply at inference costs more than the features are worth.
 
 ## Experiments to try
 
