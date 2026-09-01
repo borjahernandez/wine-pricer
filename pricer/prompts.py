@@ -72,6 +72,17 @@ def for_inference(
     return render(text)
 
 
+def as_completion(prompt: str) -> dict[str, str]:
+    """Split a training prompt into the prompt-completion pair a trainer expects.
+
+    Masking the question and scoring only the answer is the point: the fine-tune has no budget to
+    spare learning to recite tasting notes. Expressing that split as two columns lets the trainer
+    derive the masking from the data, rather than matching a response template at collation time.
+    """
+    question, answer = prompt.split(PREFIX)
+    return {"prompt": question + PREFIX, "completion": answer}
+
+
 def prepare(
     wines: Iterable[Wine], tokenizer: Tokenizer | None = None, cutoff: int = CUTOFF, use_summary: bool = False
 ) -> None:

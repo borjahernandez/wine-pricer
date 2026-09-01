@@ -352,11 +352,15 @@ for 4-bit quantisation.
 
 The plan: load a 3B base model in 4-bit, attach LoRA adapters to the attention projections, and train
 on the tasting-note prompts so the model completes `Price is $` with a number. Only the adapters
-train -- about 0.5% of the parameters -- which is what makes this fit in 16GB.""",
+train -- about 0.5% of the parameters -- which is what makes this fit in 16GB.
+
+The library APIs here move fast, so the versions are floors rather than whatever Colab ships: `trl`
+replaced its response-template collator with prompt-completion columns, and a stale cell fails at the
+import.""",
     ),
     (
         "code",
-        """!pip install -q "transformers>=4.44" "peft>=0.13" "trl>=0.11" "bitsandbytes>=0.44" \\
+        """!pip install -q "transformers>=4.56.2" "peft>=0.17" "trl>=1.0" "bitsandbytes>=0.44" \\
     "datasets>=3.0" "accelerate>=1.0"
 !git clone -q https://github.com/borjahernandez/wine-pricer.git
 %cd wine-pricer""",
@@ -369,14 +373,16 @@ from google.colab import userdata
 from huggingface_hub import login
 from peft import LoraConfig
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from trl import DataCollatorForCompletionOnlyLM, SFTConfig, SFTTrainer
+from trl import SFTConfig, SFTTrainer
+
+from pricer.prompts import as_completion
 
 login(userdata.get("HF_TOKEN"))
 
 BASE_MODEL = "Qwen/Qwen2.5-3B"
 DATASET = "borjahernandez/wine-pricer"
 RUN = "wine-pricer-qwen3b"
-PREFIX = "Price is $"  # the response template: loss is computed on what follows it""",
+""",
     ),
     (
         "md",
@@ -419,8 +425,8 @@ CONFIG = SFTConfig(
     lr_scheduler_type="cosine",
     warmup_ratio=0.03,
     optim="paged_adamw_32bit",
-    max_seq_length=256,
-    dataset_text_field="prompt",
+    max_length=256,
+    completion_only_loss=True,
     logging_steps=50,
     save_steps=500,
     save_total_limit=2,
@@ -433,7 +439,14 @@ CONFIG = SFTConfig(
     ),
     (
         "code",
-        """data = load_dataset(DATASET)
+        """# The Hub dataset carries every curated field; the fine-tune reads one column pair. Splitting
+# `prompt` at `Price is $` leaves the question as `prompt` and the bare price as `completion`, which is
+# what `completion_only_loss` masks against -- the model is scored on the number, never on the prose.
+data = load_dataset(DATASET)
+train = data["train"].map(as_completion, input_columns="prompt", remove_columns=data["train"].column_names)
+print(train)
+print(train[0])
+
 tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
 tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"
@@ -441,15 +454,11 @@ tokenizer.padding_side = "right"
 model = AutoModelForCausalLM.from_pretrained(BASE_MODEL, quantization_config=QUANT, device_map="auto")
 model.generation_config.pad_token_id = tokenizer.pad_token_id
 
-# Train on the answer only: without this the model spends its capacity learning to recite tasting notes.
-collator = DataCollatorForCompletionOnlyLM(response_template=PREFIX, tokenizer=tokenizer)
-
 trainer = SFTTrainer(
     model=model,
-    train_dataset=data["train"],
+    train_dataset=train,
     peft_config=LORA,
     args=CONFIG,
-    data_collator=collator,
 )
 trainer.train()
 trainer.push_to_hub(f"Fine-tuned on {DATASET}")""",
@@ -534,7 +543,9 @@ evaluate(weighted, test, size=250)""",
 def build(name: str, cells: list[tuple[str, str]]) -> None:
     notebook = nbformat.v4.new_notebook(
         cells=[
-            nbformat.v4.new_markdown_cell(source) if kind == "md" else nbformat.v4.new_code_cell(source)
+            nbformat.v4.new_markdown_cell(source.strip("\n"))
+            if kind == "md"
+            else nbformat.v4.new_code_cell(source.strip("\n"))
             for kind, source in cells
         ]
     )
