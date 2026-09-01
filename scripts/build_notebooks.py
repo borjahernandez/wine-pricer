@@ -423,7 +423,7 @@ CONFIG = SFTConfig(
     gradient_accumulation_steps=4,  # effective batch 16
     learning_rate=1e-4,
     lr_scheduler_type="cosine",
-    warmup_ratio=0.03,
+    warmup_steps=0.03,  # a float under 1 is read as a fraction of the run, so it tracks the split size
     optim="paged_adamw_32bit",
     max_length=256,
     completion_only_loss=True,
@@ -460,6 +460,13 @@ trainer = SFTTrainer(
     peft_config=LORA,
     args=CONFIG,
 )
+
+# Labels are built at map time now, and a prompt longer than `max_length` is dropped rather than
+# truncated -- silently, since there is no exception and no loss spike to notice. Long notes are
+# written about expensive bottles, so any loss lands in the thin top bins the balancing protects.
+dropped = len(train) - len(trainer.train_dataset)
+assert not dropped, f"{dropped} rows exceeded max_length={CONFIG.max_length} and were dropped"
+
 trainer.train()
 trainer.push_to_hub(f"Fine-tuned on {DATASET}")""",
     ),
