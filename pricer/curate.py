@@ -9,9 +9,14 @@ Two problems to fix before training:
    cap how many wines each log-price bin may contribute, which flattens the target distribution.
 
 Capping trades volume for balance and there is no free lunch: the most expensive bin holds only ~80
-wines, so a perfectly flat set would be tiny. `CAP = 6_000` over 16 bins keeps a bit over half the
-data while pulling the distribution close to flat. Both knobs are worth an experiment -- train at
+wines, so a perfectly flat set would be tiny. `CAP = 10_000` over 16 bins keeps a bit over half the
+data while pulling the distribution closer to flat. Both knobs are worth an experiment -- train at
 `cap=20_000` (nearly the raw distribution) and compare RMSLE on the expensive end of the test set.
+
+Order matters, hence `holdout` before `balance`: val and test come out of the deduplicated pool, so
+the cap only ever changes the training set. Balancing first would rebalance the test set too, and two
+caps would be scored on two different exam papers -- an unbalanced test set is also the honest one,
+since the wines you meet in a shop are not uniform in price.
 """
 
 import random
@@ -24,7 +29,7 @@ from pricer.parser import MAX_PRICE, MIN_PRICE
 
 SEED = 42
 BINS = 16
-CAP = 6_000
+CAP = 10_000
 
 
 def deduplicate(wines: list[Wine]) -> list[Wine]:
@@ -77,16 +82,20 @@ def balance(wines: list[Wine], cap: int = CAP, bins: int = BINS, seed: int = SEE
     return sample
 
 
-def split(
+def holdout(
     wines: list[Wine], val_size: int = 2_000, test_size: int = 2_000, seed: int = SEED
 ) -> tuple[list[Wine], list[Wine], list[Wine]]:
-    """Shuffle and split. Val and test come off the end, so growing the train set does not move them."""
+    """Set val and test aside, returning the pool that `balance` then turns into a training set.
+
+    Ids are assigned here, over the whole deduplicated set, so a wine keeps the same id whatever the
+    cap does to the pool around it.
+    """
     shuffled = list(wines)
     random.Random(seed).shuffle(shuffled)
     for index, wine in enumerate(shuffled):
         wine.id = index
     test = shuffled[-test_size:]
     val = shuffled[-(test_size + val_size) : -test_size]
-    train = shuffled[: -(test_size + val_size)]
-    print(f"train={len(train):,} val={len(val):,} test={len(test):,}")
-    return train, val, test
+    pool = shuffled[: -(test_size + val_size)]
+    print(f"pool={len(pool):,} val={len(val):,} test={len(test):,}")
+    return pool, val, test
