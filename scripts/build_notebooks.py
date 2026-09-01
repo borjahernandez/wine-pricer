@@ -460,6 +460,13 @@ trainer = SFTTrainer(
     peft_config=LORA,
     args=CONFIG,
 )
+
+# Labels are built at map time now, and a prompt longer than `max_length` is dropped rather than
+# truncated -- silently, since there is no exception and no loss spike to notice. Long notes are
+# written about expensive bottles, so any loss lands in the thin top bins the balancing protects.
+dropped = len(train) - len(trainer.train_dataset)
+assert not dropped, f"{dropped} rows exceeded max_length={CONFIG.max_length} and were dropped"
+
 trainer.train()
 trainer.push_to_hub(f"Fine-tuned on {DATASET}")""",
     ),
