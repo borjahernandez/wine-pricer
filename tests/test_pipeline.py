@@ -7,7 +7,7 @@ import pytest
 
 from pricer import prompts
 from pricer.baselines import constant, tfidf, tfidf_text
-from pricer.curate import balance, deduplicate, log_price_bins, split
+from pricer.curate import balance, deduplicate, holdout, log_price_bins
 from pricer.evaluator import Report
 from pricer.items import PREFIX, QUESTION, Wine
 from pricer.parser import MIN_CHARS, clean, compose, get_vintage, parse
@@ -117,18 +117,26 @@ class TestCuration:
         ids = [id(w) for w in balance(wines, cap=5)]
         assert ids == [id(w) for w in balance(wines, cap=5)]
 
-    def test_split_sizes_and_unique_ids(self):
+    def test_holdout_sizes_and_unique_ids(self):
         wines = [wine(5 + index) for index in range(100)]
-        train, val, test = split(wines, val_size=10, test_size=10)
-        assert (len(train), len(val), len(test)) == (80, 10, 10)
-        assert len({w.id for w in train + val + test}) == 100
+        pool, val, test = holdout(wines, val_size=10, test_size=10)
+        assert (len(pool), len(val), len(test)) == (80, 10, 10)
+        assert len({w.id for w in pool + val + test}) == 100
 
-    def test_split_test_set_is_stable_when_the_train_set_grows(self):
+    def test_holdout_test_set_is_stable_when_the_train_set_grows(self):
         wines = [wine(5 + index) for index in range(100)]
-        _, _, test = split(wines, val_size=10, test_size=10)
+        _, _, test = holdout(wines, val_size=10, test_size=10)
         prices = sorted(w.price for w in test)
-        _, _, again = split(wines, val_size=10, test_size=10)
+        _, _, again = holdout(wines, val_size=10, test_size=10)
         assert sorted(w.price for w in again) == prices
+
+    def test_the_cap_changes_the_training_set_and_leaves_the_test_set_alone(self):
+        wines = [wine(5 + index % 400) for index in range(1_000)]
+        pool, _, test = holdout(wines, val_size=10, test_size=10)
+        generous, strict = balance(pool, cap=100), balance(pool, cap=10)
+        assert len(strict) < len(generous)
+        assert {w.id for w in test}.isdisjoint({w.id for w in generous})
+        assert sorted(w.id for w in test) == sorted(w.id for w in holdout(wines, val_size=10, test_size=10)[2])
 
 
 class TestPrompts:
