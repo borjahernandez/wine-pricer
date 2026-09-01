@@ -1,6 +1,6 @@
 """Build the Chroma vector store from the curated training split.
 
-uv run python scripts/vectors.py            # all 49,895 training notes
+uv run python scripts/vectors.py            # all 82,786 training notes
 uv run python scripts/vectors.py --limit 5000
 """
 

@@ -1,13 +1,13 @@
 """Curation as a script: load the raw reviews, clean them, balance the prices, split, cache.
 
-    uv run python scripts/curate.py --cap 6000
+    uv run python scripts/curate.py --cap 10000
 
 The notebook `notebooks/1_curate_and_explore.ipynb` walks through the same steps with the charts.
 """
 
 import argparse
 
-from pricer.curate import CAP, balance, deduplicate, price_histogram, split
+from pricer.curate import CAP, balance, deduplicate, holdout, price_histogram
 from pricer.items import DATA_DIR, Wine
 from pricer.loaders import load
 
@@ -23,11 +23,10 @@ def main() -> None:
     print("\nRaw price distribution:")
     price_histogram(wines)
 
-    sample = balance(wines, cap=args.cap)
-    print("\nBalanced price distribution:")
-    price_histogram(sample)
-
-    train, val, test = split(sample)
+    pool, val, test = holdout(wines)
+    train = balance(pool, cap=args.cap)
+    print("\nBalanced training price distribution:")
+    price_histogram(train)
     Wine.save_local(train, val, test, path=args.out)
     print(f"\nCached to {args.out}")
 

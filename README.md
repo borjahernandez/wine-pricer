@@ -13,14 +13,22 @@ model is scored by the same `Report`, so anything you try is directly comparable
 
 [`spawn99/wine-reviews`](https://huggingface.co/datasets/spawn99/wine-reviews) — Wine Enthusiast
 tasting notes with a critic score, a price, and geography. It is a merge of two Kaggle scrapes, which
-is what makes it a good exercise: 196,630 raw rows become 179,200 parseable wines, of which only
-**125,322 have a distinct tasting note**. Leave the duplicates in and the same wine lands in train and
-test, and every model looks better than it is.
+is what makes it a good exercise: the three upstream splits are one arbitrary partition of a single
+scrape, so they are concatenated and re-split here — 280,901 raw rows become 255,856 parseable wines,
+of which only **155,262 have a distinct tasting note**. Leave the duplicates in and the same wine
+lands in train and test, and every model looks better than it is (concatenating first also exposes the
+100,594 duplicates that span the upstream splits).
 
 Prices are log-normal: median $25, tail to $500. Trained as-is, a model learns to always guess $25.
 `pricer/curate.py` caps how many wines each of 16 log-price bins may contribute, which flattens the
-target at the cost of volume — the default `cap=6000` keeps 53,895 wines (49,895 train / 2,000
-validation / 2,000 test).
+target at the cost of volume — the default `cap=10_000` keeps 82,786 training wines out of a 151,262
+pool.
+
+Order matters: `holdout` takes the 2,000 validation and 2,000 test wines out of the deduplicated pool
+*before* `balance` touches it. So the cap is purely a training-pool knob, and every run is scored on
+the same fixed, unbalanced test set — which is also the honest one, since the wines in a shop are not
+uniform in price. Balance first and each cap gets its own exam paper, mixing "more training data" with
+"easier test set" in every comparison.
 
 Two fields are deliberately hidden from the models by default:
 
@@ -37,7 +45,7 @@ Both make good ablations — pass them to `pricer.parser.compose` and measure wh
 pricer/
   items.py      the Wine datapoint, prompt building, Hub and local persistence
   parser.py     raw row -> Wine, plus the filtering rules and the composed model input
-  curate.py     deduplicate, balance the log-price distribution, split
+  curate.py     deduplicate, hold out val/test, balance the training pool's log-price distribution
   evaluator.py  Report / Tester: MAE, RMSLE, R2, hit rate, charts, results.json leaderboard
   baselines.py  the classical ladder
   llm.py        one OpenAI-compatible client, plus the rate limiter every LLM call goes through
@@ -51,14 +59,14 @@ app.py          the Gradio front end
 notebooks/      1_curate_and_explore, 2_baseline_ladder, 3_prompts_and_tokens,
                 4_qlora_finetune_colab, 5_retrieval_and_rag, 6_agent_framework
 scripts/        the same material as CLIs, for long runs
-tests/          the pipeline invariants: parsing rules, leakage, balance, split, metrics, agents
+tests/          the pipeline invariants: parsing rules, leakage, balance, holdout, metrics, agents
 ```
 
 ## Running it
 
 ```bash
 uv sync
-uv run python scripts/curate.py --cap 6000     # ~5 min, downloads and caches the splits
+uv run python scripts/curate.py --cap 10000    # ~10 min, downloads and caches the splits
 uv run python scripts/baselines.py             # fits the ladder, writes results.json
 uv run pytest
 ```
@@ -69,17 +77,19 @@ Anything that talks to a model needs a key in `.env` (copy `.env.example`):
 
 ```bash
 uv run python scripts/tasting.py --splits test          # structured features from each note
-uv run python scripts/vectors.py                       # embeds 49,895 notes into Chroma, ~2 min
+uv run python scripts/vectors.py                       # embeds 82,786 notes into Chroma, ~5 min
 uv run python scripts/plan.py --pricer classical       # scan the wine press and price what it finds
 uv run python app.py                                   # the Gradio app on :7860
 ```
 
-The fine-tune itself runs in Colab: `notebooks/4_qlora_finetune_colab.ipynb` (4-bit Qwen2.5-3B + LoRA).
+The fine-tune itself runs in Colab: `notebooks/4_qlora_finetune_colab.ipynb` (4-bit Qwen2.5-3B + LoRA),
+streaming loss, learning rate and gradient norms to Weights & Biases — add `WANDB_API_KEY` as a Colab
+secret alongside `HF_TOKEN`.
 `notebooks/3_prompts_and_tokens.ipynb` builds the prompts and pushes the dataset to the Hub first.
 
 **Budget the free Groq tier before planning any LLM experiment.** It allows 8,000 tokens a minute and
 **200,000 a day**, which works out at roughly six wines a minute and a few hundred wines a day. So:
-the tasting-note pass over all 49,895 training wines is months on the free tier, and any evaluation
+the tasting-note pass over all 82,786 training wines is months on the free tier, and any evaluation
 of the frontier agent is a sample of a hundred-odd wines, not the full test split. `pricer/llm.py`
 paces calls against the per-minute budget instead of failing, raises `DailyLimitReached` when the
 daily one is gone (no amount of retrying fixes that), and `scripts/tasting.py` resumes, so long runs
@@ -96,26 +106,28 @@ Where the classical ladder lands today, on the 2,000-wine test split:
 
 | model | MAE | RMSLE | R² | hits |
 | --- | --- | --- | --- | --- |
-| Constant $31 (geometric mean) | $26.72 | 0.790 | -9.0% | 27.9% |
-| Metadata + linear regression | $19.31 | 0.554 | 30.0% | 50.1% |
-| TF-IDF + Ridge | $17.09 | **0.479** | 44.4% | 55.9% |
-| LSA + random forest | $18.36 | 0.527 | 34.7% | 52.9% |
+| Constant $30 (geometric mean) | $18.48 | 0.634 | -2.4% | 39.1% |
+| Metadata + linear regression | $14.48 | 0.489 | 23.9% | 57.6% |
+| TF-IDF + Ridge | $12.82 | **0.423** | 38.3% | 63.6% |
+| LSA + random forest | $13.42 | 0.454 | 31.9% | 60.0% |
 
-That TF-IDF row is the number to beat.
+That TF-IDF row is the number to beat. Don't read these against numbers from a balanced test set: an
+unbalanced test set is dominated by cheap wines, where the models are strongest, so every row here
+looks better than the same model scored on a flattened split. The ranking is what transfers.
 
 The retrieval and LLM agents are scored on a 100-wine sample of the same split (the frontier agent costs a network
 call per wine), so read them against each other rather than against the rows above:
 
 | agent | MAE | RMSLE | hits | n |
 | --- | --- | --- | --- | --- |
-| Classical, note only | $21.36 | **0.548** | 49.0% | 100 |
-| Neighbours, retrieval only (k=8) | $23.94 | 0.663 | 41.0% | 100 |
+| Classical, note only | $14.40 | **0.454** | 57.0% | 100 |
+| Neighbours, retrieval only (k=8) | $17.55 | 0.588 | 53.0% | 100 |
 | Frontier (RAG + LLM) | — | — | — | daily token budget spent; rerun tomorrow |
 
 Two lessons already: retrieval on its own beats guessing the mean but loses to bag-of-words, and the
-note-only model matters — serving the metadata-aware pipeline a note with `variety='unknown'` scored
-0.710 instead of 0.548. Fitting a model on features you cannot supply at inference costs more than
-the features are worth.
+note-only model matters — serving the metadata-aware pipeline a note with `variety='unknown'` cost
+about 0.16 RMSLE when measured. Fitting a model on features you cannot supply at inference costs more
+than the features are worth.
 
 ## Experiments to try
 
