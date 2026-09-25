@@ -66,8 +66,10 @@ tests/          the pipeline invariants: parsing rules, leakage, balance, holdou
 
 ## Running it
 
+Needs [`uv`](https://docs.astral.sh/uv/) (Python comes with it; the project pins 3.12+):
+
 ```bash
-uv sync
+uv sync --extra agents                         # agents extra covers chroma, gradio, feedparser, sentence-transformers
 uv run python scripts/curate.py --cap 10000    # ~10 min, downloads and caches the splits
 uv run python scripts/baselines.py             # fits the ladder, writes results.json
 uv run pytest
@@ -192,8 +194,8 @@ Every stage is built, tested and run end to end, including the fine-tunes.
 
 | Stage | State |
 | --- | --- |
-| Curation, baselines, retrieval, agents, Gradio app | Run, 70+ tests green |
-| QLoRA on Qwen2.5-3B | Run in Colab across four configs (`notebooks/4_qlora_finetune_colab.ipynb`). Best: 0.425 RMSLE |
+| Curation, baselines, retrieval, agents, Gradio app | Run, test suite green (38 tests) |
+| QLoRA on Qwen2.5-3B | Run in Colab across four configs (`notebooks/4`-`6`). Best: 0.425 RMSLE |
 | Full fine-tune, ModernBERT-large | Run in Colab (`notebooks/7_modernbert_finetune_colab.ipynb`). Best result on the board: 0.367 RMSLE |
 | Claude Opus 5 zero-shot baseline | Run over the full 2,000-wine test split (`notebooks/10_claude_opus_5.ipynb`) |
 | Frontier RAG agent | Run on 375 wines; the rest is free-tier token budget, not missing code |
