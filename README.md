@@ -9,6 +9,9 @@ agents.
 The point is the experiments, not the leaderboard. Every stage has knobs worth turning, and every
 model is scored by the same `Report`, so anything you try is directly comparable to everything else.
 
+**Result so far:** a 395M encoder (ModernBERT-large) fine-tuned in one Colab session edges out Claude
+Opus 5 zero-shot — 0.367 vs 0.390 RMSLE on the same fixed 2,000-wine test split.
+
 ## The data
 
 [`spawn99/wine-reviews`](https://huggingface.co/datasets/spawn99/wine-reviews) — Wine Enthusiast
@@ -133,6 +136,17 @@ beat, and loses clearly to an encoder eight times smaller. Two things separate t
 a regression head and a squared-error loss on the actual target, while the decoder has to emit the
 number as tokens and is graded on next-token cross-entropy, which is not the metric anyone cares
 about here. Architecture matched to the task beat both scale and in-domain data.
+
+| ModernBERT-large, fine-tuned | Claude Opus 5, zero-shot |
+| --- | --- |
+| ![ModernBERT-large: predicted vs actual price](assets/predicted-modernbert.png) | ![Claude Opus 5: predicted vs actual price](assets/predicted-opus-5.png) |
+
+You can see the token-emission cost in the QLoRA runs — the decoder's guesses land on a handful of
+price levels instead of tracking the diagonal:
+
+| Qwen2.5-3B QLoRA (att+ffn) | Qwen2.5-3B QLoRA (att only) |
+| --- | --- |
+| ![QLoRA att+ffn: predicted vs actual price](assets/predicted-qwen-qlora-att-ffn.png) | ![QLoRA att only: predicted vs actual price](assets/predicted-qwen-qlora-att.png) |
 
 That is the result worth carrying into a real deployment decision: *fine-tune or prompt* is the wrong
 question. **Fine-tune what** is the question, and a small encoder on a regression objective is often
