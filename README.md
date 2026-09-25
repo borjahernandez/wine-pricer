@@ -57,7 +57,9 @@ pricer/
                 scanner, messaging, planning
 app.py          the Gradio front end
 notebooks/      1_curate_and_explore, 2_baseline_ladder, 3_prompts_and_tokens,
-                4_qlora_finetune_colab, 5_retrieval_and_rag, 6_agent_framework
+                4_qlora_finetune_colab, 5-6 QLoRA sweep variants,
+                7_modernbert_finetune_colab, 8_retrieval_and_rag,
+                9_agent_framework, 10_claude_opus_5
 scripts/        the same material as CLIs, for long runs
 tests/          the pipeline invariants: parsing rules, leakage, balance, holdout, metrics, agents
 ```
@@ -102,32 +104,53 @@ $20 out on a $25 bottle is a disaster, on a $400 bottle it is noise. Alongside i
 intuition, R² for reference (it will be ugly and negative for weak models, because squared dollar
 error is dominated by the expensive tail), and a hit rate: within $10 or 20% of the true price.
 
-Where the classical ladder lands today, on the 2,000-wine test split:
+The whole leaderboard, on the same fixed 2,000-wine test split, sorted by RMSLE:
 
-| model | MAE | RMSLE | R² | hits |
-| --- | --- | --- | --- | --- |
-| Constant $30 (geometric mean) | $18.48 | 0.634 | -2.4% | 39.1% |
-| Metadata + linear regression | $14.48 | 0.489 | 23.9% | 57.6% |
-| TF-IDF + Ridge | $12.82 | **0.423** | 38.3% | 63.6% |
-| LSA + random forest | $13.42 | 0.454 | 31.9% | 60.0% |
+| model | MAE | RMSLE | R² | hits | n |
+| --- | --- | --- | --- | --- | --- |
+| **ModernBERT-large, full fine-tune** | **$12.43** | **0.367** | **62.2%** | **67.5%** | 2000 |
+| Claude Opus 5, zero-shot | $13.31 | 0.390 | 45.3% | 64.4% | 2000 |
+| Qwen2.5-3B, QLoRA (att+ffn, bs=4) | $13.57 | 0.425 | 54.5% | 63.7% | 2000 |
+| Qwen2.5-3B, QLoRA (att only, bs=8) | $13.87 | 0.438 | 52.6% | 63.2% | 2000 |
+| TF-IDF + Ridge | $15.31 | 0.454 | 44.4% | 58.9% | 2000 |
+| Classical, note only | $16.42 | 0.495 | 38.3% | 55.5% | 2000 |
+| LSA + random forest | $16.57 | 0.505 | 34.1% | 55.1% | 2000 |
+| Metadata + linear regression | $17.40 | 0.532 | 29.2% | 52.8% | 2000 |
+| Neighbours, retrieval only (k=8) | $17.99 | 0.555 | 25.5% | 53.2% | 2000 |
+| Constant $30 (geometric mean) | $23.96 | 0.749 | -7.7% | 29.6% | 2000 |
+| Frontier (RAG + LLM) | $20.81 | 0.788 | 21.2% | 44.0% | 375 |
 
-That TF-IDF row is the number to beat. Don't read these against numbers from a balanced test set: an
-unbalanced test set is dominated by cheap wines, where the models are strongest, so every row here
-looks better than the same model scored on a flattened split. The ranking is what transfers.
+**The headline: a 395M encoder fine-tuned on this task beat a frontier model that had never seen it,
+and a 3B decoder fine-tuned on the same data did not.** ModernBERT-large at 0.367 RMSLE against
+Claude Opus 5 zero-shot at 0.390 is a narrow win, but it is a win on a fixed held-out set with every
+model scored by the same `Report` — and it cost one Colab session against a per-call API bill.
 
-The retrieval and LLM agents are scored on a 100-wine sample of the same split (the frontier agent costs a network
-call per wine), so read them against each other rather than against the rows above:
+The QLoRA'd Qwen2.5-3B is the more interesting row. At 0.425 it beats every classical baseline
+comfortably, so the fine-tune plainly worked. It still loses to the frontier model it was trained to
+beat, and loses clearly to an encoder eight times smaller. Two things separate them: ModernBERT gets
+a regression head and a squared-error loss on the actual target, while the decoder has to emit the
+number as tokens and is graded on next-token cross-entropy, which is not the metric anyone cares
+about here. Architecture matched to the task beat both scale and in-domain data.
 
-| agent | MAE | RMSLE | hits | n |
-| --- | --- | --- | --- | --- |
-| Classical, note only | $14.40 | **0.454** | 57.0% | 100 |
-| Neighbours, retrieval only (k=8) | $17.55 | 0.588 | 53.0% | 100 |
-| Frontier (RAG + LLM) | — | — | — | daily token budget spent; rerun tomorrow |
+That is the result worth carrying into a real deployment decision: *fine-tune or prompt* is the wrong
+question. **Fine-tune what** is the question, and a small encoder on a regression objective is often
+the cheap answer nobody proposes.
 
-Two lessons already: retrieval on its own beats guessing the mean but loses to bag-of-words, and the
-note-only model matters — serving the metadata-aware pipeline a note with `variety='unknown'` cost
-about 0.16 RMSLE when measured. Fitting a model on features you cannot supply at inference costs more
-than the features are worth.
+Three more results worth reading:
+
+* **Retrieval alone is weak.** Neighbours at k=8 (0.555) beats guessing the mean but loses to
+  bag-of-words. Similar tasting notes are not similarly priced.
+* **RAG made the frontier model worse, not better.** The Frontier agent (0.788) is the worst row on
+  the board — retrieved neighbours anchored it toward the prices of wines that read alike, and it
+  followed them off a cliff. Retrieval is not free; it is a prior, and a bad prior costs more than
+  no prior. Read this row against the others with care: n=375, not 2000, because it costs a network
+  call per wine.
+* **Features you cannot supply at inference are worth less than they look.** Serving the
+  metadata-aware pipeline a note with `variety='unknown'` cost about 0.16 RMSLE when measured.
+
+Don't read any of these against numbers from a balanced test set: an unbalanced test set is dominated
+by cheap wines, where the models are strongest, so every row looks better than the same model scored
+on a flattened split. The ranking is what transfers.
 
 ## Experiments to try
 
@@ -165,6 +188,18 @@ trained on, because an estimate for it would be meaningless.
 
 ## Status
 
-Every stage above is built and tested end to end, apart from the QLoRA fine-tune itself, which needs a GPU:
-run `notebooks/4_qlora_finetune_colab.ipynb` in Colab, push the adapter, and `SpecialistAgent` picks it up
-(set `WINE_ADAPTER` if you name it something else).
+Every stage is built, tested and run end to end, including the fine-tunes.
+
+| Stage | State |
+| --- | --- |
+| Curation, baselines, retrieval, agents, Gradio app | Run, 70+ tests green |
+| QLoRA on Qwen2.5-3B | Run in Colab across four configs (`notebooks/4_qlora_finetune_colab.ipynb`). Best: 0.425 RMSLE |
+| Full fine-tune, ModernBERT-large | Run in Colab (`notebooks/7_modernbert_finetune_colab.ipynb`). Best result on the board: 0.367 RMSLE |
+| Claude Opus 5 zero-shot baseline | Run over the full 2,000-wine test split (`notebooks/8_claude_opus_5.ipynb`) |
+| Frontier RAG agent | Run on 375 wines; the rest is free-tier token budget, not missing code |
+
+To reproduce a fine-tune, run the Colab notebook, push the adapter or model to the Hub, and
+`SpecialistAgent` picks it up (set `WINE_ADAPTER` if you name it something else). The W&B run for the
+ModernBERT fine-tune streams loss, learning rate and gradient norms, and `eval/rmsle_expensive`
+tracks the metric on the expensive half of the split separately, because that is where every model
+here is weakest.
