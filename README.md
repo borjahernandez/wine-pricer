@@ -195,7 +195,7 @@ Every stage is built, tested and run end to end, including the fine-tunes.
 | Curation, baselines, retrieval, agents, Gradio app | Run, 70+ tests green |
 | QLoRA on Qwen2.5-3B | Run in Colab across four configs (`notebooks/4_qlora_finetune_colab.ipynb`). Best: 0.425 RMSLE |
 | Full fine-tune, ModernBERT-large | Run in Colab (`notebooks/7_modernbert_finetune_colab.ipynb`). Best result on the board: 0.367 RMSLE |
-| Claude Opus 5 zero-shot baseline | Run over the full 2,000-wine test split (`notebooks/8_claude_opus_5.ipynb`) |
+| Claude Opus 5 zero-shot baseline | Run over the full 2,000-wine test split (`notebooks/10_claude_opus_5.ipynb`) |
 | Frontier RAG agent | Run on 375 wines; the rest is free-tier token budget, not missing code |
 
 To reproduce a fine-tune, run the Colab notebook, push the adapter or model to the Hub, and

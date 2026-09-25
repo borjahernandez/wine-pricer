@@ -5,6 +5,8 @@ data/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
 results.json
 jsonl/
 chroma/
