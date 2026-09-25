@@ -26,11 +26,13 @@ class FrontierAgent(Agent):
         encoder: SentenceTransformer | None = None,
         provider: str = "groq",
         model: str | None = None,
+        reasoning_effort: str = "low",
         k: int = 5,
     ):
         self.log(f"Setting up with {provider}")
         self.client, default_model = client_for(provider)
         self.model = model or default_model
+        self.reasoning_effort = reasoning_effort
         self.collection = collection or vectors.load()
         self.encoder = encoder or vectors.encoder()
         self.k = k
@@ -54,9 +56,9 @@ class FrontierAgent(Agent):
             self.messages(text),
             max_tokens=200,
             temperature=0,
-            extra_body={"reasoning_effort": "low"},
+            extra_body={"reasoning_effort": self.reasoning_effort},
         )
-        match = NUMBER.search(reply.replace("$", "").replace(",", ""))
-        guess = float(match.group()) if match else 0.0
+        match = NUMBER.findall(reply.replace("$", "").replace(",", ""))
+        guess = float(match[-1]) if match else 0.0
         self.log(f"Estimated ${guess:.2f}")
         return guess

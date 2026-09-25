@@ -346,45 +346,66 @@ tokens, so if it scores within noise of the full note, the note is mostly decora
     ),
 ]
 
-QLORA = [
-    (
-        "md",
-        """# QLoRA fine-tune
+def qwen_qlora(
+    *,
+    variant_note: str,
+    targets: str,
+    batch: int,
+    accum: int,
+    grad_ckpt: bool,
+    log_steps: int,
+    save_steps: int,
+    adapter: str,
+    title: str,
+) -> list[tuple[str, str]]:
+    """One Qwen2.5-3B QLoRA run. The sweep variants share every cell; only the substituted
+    hyperparameters and the adapter evaluated at the end differ."""
+    cells = [
+        (
+            "md",
+            """# QLoRA fine-tune -- Qwen2.5-3B
 
 **Run this in Colab on a T4 (free) or an A100.** Nothing here works on a laptop: it needs a CUDA GPU
 for 4-bit quantisation.
 
-The plan: load a 3B base model in 4-bit, attach LoRA adapters to the attention projections, and train
-on the tasting-note prompts so the model completes `Price is $` with a number. Only the adapters
-train -- about 0.5% of the parameters -- which is what makes this fit in 16GB.
+The plan: load a 3B base model in 4-bit nf4, attach LoRA adapters, and train on the tasting-note
+prompts so the model completes `Price is $` with a number. Only the adapters train, which is what
+makes this fit in 16GB.
 
-The library APIs here move fast, so the versions are floors rather than whatever Colab ships: `trl`
-replaced its response-template collator with prompt-completion columns, and a stale cell fails at the
-import.
+@VARIANT@
 
 Add two Colab secrets first (key icon, left sidebar): `HF_TOKEN` from
 [huggingface.co](https://huggingface.co/settings/tokens) and `WANDB_API_KEY` from
 [wandb.ai](https://wandb.ai/authorize). The run streams to Weights & Biases, which is how you watch a
-four-hour fine-tune without leaving the tab open.""",
-    ),
-    (
-        "code",
-        """!pip install -q "transformers>=4.56.2" "peft>=0.17" "trl>=1.0" "bitsandbytes>=0.44" \\
-    "datasets>=3.0" "accelerate>=1.0" "wandb>=0.18"
+multi-hour fine-tune without leaving the tab open.""",
+        ),
+        (
+            "code",
+            """!pip install -q -U \\
+    "transformers>=4.56.2" \\
+    "peft>=0.17" \\
+    "trl>=1.0" \\
+    "bitsandbytes>=0.44" \\
+    "torchao>=0.16.0" \\
+    "datasets>=3.0" \\
+    "accelerate>=1.0" \\
+    "wandb>=0.18"
 !git clone -q https://github.com/borjahernandez/wine-pricer.git
 %cd wine-pricer""",
-    ),
-    (
-        "code",
-        """import os
+        ),
+        (
+            "code",
+            """import math
+import os
 from datetime import datetime
 
 import torch
+import torchao
 import wandb
 from datasets import load_dataset
 from google.colab import userdata
 from huggingface_hub import login
-from peft import LoraConfig
+from peft import LoraConfig, prepare_model_for_kbit_training
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from trl import SFTConfig, SFTTrainer
 
@@ -394,38 +415,68 @@ login(userdata.get("HF_TOKEN"))
 
 BASE_MODEL = "Qwen/Qwen2.5-3B"
 DATASET = "borjahernandez/wine-pricer"
+
+PROJECT_NAME = "wine-pricer"
+HF_USER = "borjahernandez"
 RUN = "wine-pricer-qwen3b"
 RUN_NAME = f"{RUN}-{datetime.now():%Y%m%d-%H%M}"  # one W&B run per attempt, so sweeps stay legible
+PROJECT_RUN_NAME = f"{PROJECT_NAME}-{RUN_NAME}"
+HUB_MODEL_NAME = f"{HF_USER}/{PROJECT_RUN_NAME}"
+
+# Tracking
+VAL_SIZE = 500
+LOG_STEPS = @LOG@
+SAVE_STEPS = @SAVE@
 
 os.environ["WANDB_API_KEY"] = userdata.get("WANDB_API_KEY")
-os.environ["WANDB_PROJECT"] = "wine-pricer"
+os.environ["WANDB_PROJECT"] = PROJECT_NAME
 os.environ["WANDB_LOG_MODEL"] = "false"  # adapters go to the Hub; W&B only needs the curves
 os.environ["WANDB_WATCH"] = "false"  # gradient histograms cost throughput and rarely answer anything
 wandb.login()
-""",
-    ),
-    (
-        "md",
-        """### Hyperparameters
 
-Sensible starting points, all worth a sweep:
+capability = torch.cuda.get_device_capability()
+use_bf16 = capability[0] >= 8
+DTYPE = torch.bfloat16 if use_bf16 else torch.float16""",
+        ),
+        (
+            "code",
+            """# The Hub dataset carries every curated field; the fine-tune reads one column pair. Splitting
+# `prompt` at `Price is $` leaves the question as `prompt` and the bare price as `completion`, which is
+# what `completion_only_loss` masks against -- the model is scored on the number, never on the prose.
+# VAL_SIZE validation rows are scored every SAVE_STEPS, so overfitting shows up mid-run.
+data = load_dataset(DATASET)
+train = data["train"].map(as_completion, input_columns="prompt", remove_columns=data["train"].column_names)
+val = (
+    data["validation"]
+    .map(as_completion, input_columns="prompt", remove_columns=data["validation"].column_names)
+    .select(range(VAL_SIZE))
+)
+
+print(train)
+print(train[0])""",
+        ),
+        (
+            "md",
+            """### Hyperparameters
 
 | knob | value | why |
 | --- | --- | --- |
 | `r` | 32 | adapter rank. 8 underfits here, 64 costs memory for little gain |
 | `alpha` | 64 | conventionally 2r |
-| target modules | attention projections | where the task-specific reasoning lives |
+| target modules | @TARGETS_MD@ | @TARGETS_WHY@ |
 | `lr` | 1e-4 | LoRA tolerates rates ~10x a full fine-tune |
+| effective batch | @BATCH@ x @ACCUM@ = @EFF@ | held constant across the sweep |
+| gradient checkpointing | @CKPT_MD@ | trades recompute for memory |
 | epochs | 1 | 80k examples is plenty; a second epoch mostly memorises |
 | 4-bit nf4, double quant | on | the whole reason this fits on a T4 |""",
-    ),
-    (
-        "code",
-        """LORA = LoraConfig(
+        ),
+        (
+            "code",
+            """LORA = LoraConfig(
     r=32,
     lora_alpha=64,
     lora_dropout=0.1,
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+    target_modules=@TARGETS@,
     task_type="CAUSAL_LM",
 )
 
@@ -433,56 +484,79 @@ QUANT = BitsAndBytesConfig(
     load_in_4bit=True,
     bnb_4bit_quant_type="nf4",
     bnb_4bit_use_double_quant=True,
-    bnb_4bit_compute_dtype=torch.bfloat16,
+    bnb_4bit_compute_dtype=DTYPE,
 )
 
+STEPS = math.ceil(len(train) / 16)  # 79,359 / 16 = 4,960 optimizer steps
+
 CONFIG = SFTConfig(
-    output_dir=RUN,
+    output_dir=PROJECT_RUN_NAME,
     num_train_epochs=1,
-    per_device_train_batch_size=4,
-    gradient_accumulation_steps=4,  # effective batch 16
+    per_device_train_batch_size=@BATCH@,
+    gradient_accumulation_steps=@ACCUM@,
+    per_device_eval_batch_size=1,
     learning_rate=1e-4,
     lr_scheduler_type="cosine",
-    warmup_steps=0.03,  # a float under 1 is read as a fraction of the run, so it tracks the split size
-    optim="paged_adamw_32bit",
+    warmup_steps=int(0.03 * STEPS),
+    optim="adamw_torch_fused",
+    weight_decay=0.001,
+    max_grad_norm=0.3,
     max_length=256,
     completion_only_loss=True,
-    logging_steps=50,
-    save_steps=500,
-    save_total_limit=2,
-    bf16=True,
+    gradient_checkpointing=@CKPT@,
+    fp16=not use_bf16,
+    bf16=use_bf16,
     report_to="wandb",
     run_name=RUN_NAME,
+    save_strategy="steps",
+    save_steps=SAVE_STEPS,
+    save_total_limit=10,
+    logging_steps=LOG_STEPS,
+    eval_strategy="steps",
+    eval_steps=SAVE_STEPS,
     push_to_hub=True,
-    hub_model_id=f"borjahernandez/{RUN}",
+    hub_strategy="every_save",
+    hub_model_id=HUB_MODEL_NAME,
     hub_private_repo=True,
 )""",
-    ),
-    (
-        "code",
-        """# The Hub dataset carries every curated field; the fine-tune reads one column pair. Splitting
-# `prompt` at `Price is $` leaves the question as `prompt` and the bare price as `completion`, which is
-# what `completion_only_loss` masks against -- the model is scored on the number, never on the prose.
-data = load_dataset(DATASET)
-train = data["train"].map(as_completion, input_columns="prompt", remove_columns=data["train"].column_names)
-print(train)
-print(train[0])
-
-tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
+        ),
+        (
+            "code",
+            """tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
 tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "right"
 
-model = AutoModelForCausalLM.from_pretrained(BASE_MODEL, quantization_config=QUANT, device_map="auto")
+model = AutoModelForCausalLM.from_pretrained(
+    BASE_MODEL,
+    quantization_config=QUANT,
+    device_map="auto",
+    dtype=DTYPE,
+)
 model.generation_config.pad_token_id = tokenizer.pad_token_id
+
+model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=@CKPT@)
+model.config.use_cache = False
+
+print(f"Memory footprint: {model.get_memory_footprint() / 1e6:.1f} MB")
 
 trainer = SFTTrainer(
     model=model,
     train_dataset=train,
+    eval_dataset=val,
     peft_config=LORA,
     args=CONFIG,
 )
 
-# Labels are built at map time now, and a prompt longer than `max_length` is dropped rather than
+# PEFT creates the adapters in bf16 (it follows the model config, which says bfloat16 regardless
+# of the load dtype). The fp16 GradScaler cannot unscale bf16 gradients, so cast to fp32 --
+# which is what QLoRA does anyway.
+for param in trainer.model.parameters():
+    if param.requires_grad:
+        param.data = param.data.to(torch.float32)""",
+        ),
+        (
+            "code",
+            """# Labels are built at map time now, and a prompt longer than `max_length` is dropped rather than
 # truncated -- silently, since there is no exception and no loss spike to notice. Long notes are
 # written about expensive bottles, so any loss lands in the thin top bins the balancing protects.
 dropped = len(train) - len(trainer.train_dataset)
@@ -491,97 +565,401 @@ assert not dropped, f"{dropped} rows exceeded max_length={CONFIG.max_length} and
 trainer.train()
 trainer.push_to_hub(f"Fine-tuned on {DATASET}")
 wandb.finish()  # without this the run stays live and the summary metrics never settle""",
-    ),
-    (
-        "md",
-        """### Reading the W&B run
+        ),
+        (
+            "md",
+            """### Score it on the full test split
 
-Three charts earn their place. `train/learning_rate` is the cheapest sanity check there is -- the ramp
-should last ~3% of the steps and then decay on a cosine, which confirms the warmup fraction resolved
-against the real step count rather than being read as an absolute value. `train/loss` on a
-completion-only objective starts far lower than a full-text fine-tune, because only a handful of
-price tokens are scored per example; watch its *slope*, not its height, and expect it to flatten
-long before the epoch ends. `train/grad_norm` spiking after warmup means the learning rate is too
-high for this rank.
+The pushed adapter is loaded back onto the quantized base and evaluated on all 2,000 test wines --
+the same set, the same `evaluate`, the same `results.json` as every other model. Two details keep
+the row comparable with the ModernBERT encoder's:
 
-The loss is not comparable to the baseline ladder -- that is what RMSLE on the held-out test set is
-for, below. Nor is it comparable across curations: change the cap and the training pool changes with
-it, so record which dataset a run used before trusting two loss curves side by side.""",
-    ),
-    (
-        "md",
-        """### Score it on the same test split as everything else
+- **Predictions are clamped to [0, $1,000]**, the same bound the encoder applies in log space.
+  Unbounded, one hallucinated "4500" would dominate the error and the comparison stops being
+  about pricing.
+- **Parse failures are counted.** A generative model can emit anything; the encoder structurally
+  cannot fail here, so the rate is a real cost of the decoder approach.""",
+        ),
+        (
+            "code",
+            """import re
 
-Two ways to read the answer out:
+from peft import PeftModel
 
-1. **Generate** a few tokens and parse the number.
-2. **Weighted average over the logits** of the first answer token -- the model's whole distribution
-   instead of its argmax, which is measurably better calibrated for a numeric target.
-
-Both go through `pricer.evaluator`, so the result drops straight onto the same leaderboard as the
-classical baselines.""",
-    ),
-    (
-        "code",
-        """import re
-
-from pricer.evaluator import evaluate
+from pricer.evaluator import evaluate, leaderboard
 from pricer.items import Wine
 
-_, _, test = Wine.from_hub(DATASET)
+ADAPTER = "@ADAPTER@"  # the adapter repo this run pushed to the Hub
+
+# Must match the ModernBERT evaluation exactly, or the two leaderboard rows are not comparable.
+MAX_LENGTH = 256
+MAX_PRICE = 1000.0
+
+base_model = AutoModelForCausalLM.from_pretrained(
+    BASE_MODEL,
+    quantization_config=QUANT,
+    device_map="auto",
+    dtype=DTYPE,
+)
+base_model.generation_config.pad_token_id = tokenizer.pad_token_id
+
+model = PeftModel.from_pretrained(base_model, ADAPTER)
 model.eval()
+
+_, _, test = Wine.from_hub(DATASET)
+
+failures = 0
 
 
 def parse_price(text: str) -> float:
     match = re.search(r"[-+]?\\d[\\d,]*\\.?\\d*", text.replace("$", ""))
-    return float(match.group().replace(",", "")) if match else 0.0
+    if not match:
+        return 0.0
+    return min(max(float(match.group().replace(",", "")), 0.0), MAX_PRICE)
 
 
 def specialist(wine: Wine) -> float:
-    inputs = tokenizer(wine.test_prompt(), return_tensors="pt").to("cuda")
+    global failures
+    inputs = tokenizer(
+        wine.test_prompt(), return_tensors="pt", truncation=True, max_length=MAX_LENGTH
+    ).to(model.device)
     with torch.no_grad():
         output = model.generate(**inputs, max_new_tokens=6, do_sample=False)
-    completion = tokenizer.decode(output[0][inputs["input_ids"].shape[1] :])
-    return parse_price(completion)
+    completion = tokenizer.decode(output[0][inputs["input_ids"].shape[1]:])
+    price = parse_price(completion)
+    if price == 0.0:
+        # A generative model can emit anything. ModernBERT structurally cannot fail here,
+        # so this rate is a real cost of the decoder approach and belongs in the write-up.
+        failures += 1
+    return price
 
 
-specialist.__name__ = "Fine-tuned Qwen2.5-3B"
-evaluate(specialist, test, size=250)""",
-    ),
-    (
-        "code",
-        """def weighted(wine: Wine, top: int = 8) -> float:
-    \"\"\"Expected price under the model's own distribution over the first answer token.\"\"\"
-    inputs = tokenizer(wine.test_prompt(), return_tensors="pt").to("cuda")
-    with torch.no_grad():
-        logits = model(**inputs).logits[0, -1]
-    probabilities = torch.nn.functional.softmax(logits, dim=-1)
-    values, indices = probabilities.topk(top)
-    prices, weights = [], []
-    for probability, index in zip(values.tolist(), indices.tolist(), strict=True):
-        price = parse_price(tokenizer.decode(index))
-        if price:
-            prices.append(price)
-            weights.append(probability)
-    if not prices:
-        return 0.0
-    total = sum(weights)
-    return sum(price * weight for price, weight in zip(prices, weights, strict=True)) / total
+specialist.__name__ = "@TITLE@"
+evaluate(specialist, test, size=len(test))
+print(f"parse failures: {failures} / {len(test)}")
+leaderboard()""",
+        ),
+        (
+            "md",
+            """### Experiments
 
-
-weighted.__name__ = "Fine-tuned Qwen2.5-3B (weighted)"
-evaluate(weighted, test, size=250)""",
-    ),
-    (
-        "md",
-        """### Experiments
-
-- **Base model, untrained** on the same prompts: the gap is what the fine-tune actually bought.
+- **The sweep variants** (`5_qlora_finetune_att_only.ipynb`, `6_qlora_finetune_bs16.ipynb`):
+  same code, different knobs.
 - **Rank sweep**: r = 8 / 32 / 64 at matched steps.
-- **Summaries vs full notes** (`-summaries` dataset from the previous notebook).
+- **Summaries vs full notes** (`-summaries` dataset from the earlier notebook).
 - **Add `points` to the prompt** and watch the fine-tune coast -- the same leakage the baselines see.
 - **Bigger base**: an 8B model in 4-bit still fits an A100. Does scale beat data curation here?""",
-    ),
+        ),
+    ]
+
+    has_ffn = "gate_proj" in targets
+    substitutions = {
+        "@VARIANT@": variant_note,
+        "@TARGETS@": targets,
+        "@TARGETS_MD@": "attention + FFN" if has_ffn else "attention only",
+        "@TARGETS_WHY@": "every projection the adapters can reach"
+        if has_ffn
+        else "half the capacity -- measures what the FFN adapters buy",
+        "@BATCH@": str(batch),
+        "@ACCUM@": str(accum),
+        "@EFF@": str(batch * accum),
+        "@CKPT@": str(grad_ckpt),
+        "@CKPT_MD@": "on" if grad_ckpt else "off",
+        "@LOG@": str(log_steps),
+        "@SAVE@": str(save_steps),
+        "@ADAPTER@": adapter,
+        "@TITLE@": title,
+    }
+    result = []
+    for kind, source in cells:
+        for token, value in substitutions.items():
+            source = source.replace(token, value)
+        result.append((kind, source))
+    return result
+
+
+ATTENTION = '["q_proj", "k_proj", "v_proj", "o_proj"]'
+ATTENTION_FFN = '["q_proj", "k_proj", "v_proj", "o_proj",\n                    "gate_proj", "up_proj", "down_proj"]'
+
+# The canonical run: all seven projections, effective batch 16 without checkpointing.
+QLORA = qwen_qlora(
+    variant_note="""This is the canonical run: adapters on attention **and** the FFN
+(`gate_proj`/`up_proj`/`down_proj`), per-device batch 4 with accumulation 4, no gradient
+checkpointing. Adding the FFN projections roughly doubles adapter capacity for the same memory.""",
+    targets=ATTENTION_FFN,
+    batch=4,
+    accum=4,
+    grad_ckpt=False,
+    log_steps=25,
+    save_steps=500,
+    adapter="borjahernandez/wine-pricer-wine-pricer-qwen3b-20260902-1152",
+    title="Fine-tuned Qwen2.5-3B",
+)
+
+# Sweep variant: attention only, 8 x 2 -- same effective batch, half the adapter capacity.
+QLORA_ATT = qwen_qlora(
+    variant_note="""Sweep variant: attention projections only, per-device batch 8 with accumulation
+2 -- the same effective batch as the canonical run. The difference measured here is what the FFN
+adapters contribute.""",
+    targets=ATTENTION,
+    batch=8,
+    accum=2,
+    grad_ckpt=False,
+    log_steps=5,
+    save_steps=100,
+    adapter="borjahernandez/wine-pricer-wine-pricer-qwen3b-20260901-1636",
+    title="Qwen2.5-3B att-only",
+)
+
+# Sweep variant: per-device batch 16, no accumulation, checkpointing on -- same effective batch,
+# trading recompute for a bigger per-device batch.
+QLORA_BS16 = qwen_qlora(
+    variant_note="""Sweep variant: per-device batch 16 with no accumulation and gradient
+checkpointing on -- the same effective batch as the canonical run, trading recompute for a bigger
+per-device batch.""",
+    targets=ATTENTION_FFN,
+    batch=16,
+    accum=1,
+    grad_ckpt=True,
+    log_steps=25,
+    save_steps=500,
+    adapter="borjahernandez/wine-pricer-wine-pricer-qwen3b-YYYYMMDD-HHMM",
+    title="Qwen2.5-3B bs16+ckpt",
+)
+
+
+MODERNBERT = [
+    ("md", """# Fine-tune ModernBERT-large for wine price regression
+
+**Run this in Colab with a CUDA GPU** (a T4 is enough). ModernBERT-large is an encoder, so this
+notebook fine-tunes its sequence-classification head to predict `log1p(price)` from the tasting
+note. There is no generation step -- the answer is a scalar.
+
+Two deliberate choices, both learned the slow way:
+
+- **Full fine-tune, not LoRA.** The model is 395M parameters; optimizer state fits easily, and a
+  task this far from masked-LM pretraining wants the encoder free to move. The regression `head`
+  is initialised from the MLM projection head -- training only the last `classifier` linear would
+  leave a token-reconstruction projection frozen between the encoder and the output.
+- **`log1p(price)` as the target.** Matches the project's primary RMSLE metric and stops the
+  expensive tail from swamping the gradient.
+
+Add `HF_TOKEN` and `WANDB_API_KEY` as Colab secrets before running the setup cell."""),
+    ("code", """!pip install -q -U "transformers>=4.56.2" "datasets>=3.0" "accelerate>=1.0" "wandb>=0.18"
+!git clone -q https://github.com/borjahernandez/wine-pricer.git
+%cd wine-pricer"""),
+    ("code", """import math
+import os
+from datetime import datetime
+
+import numpy as np
+import torch
+import wandb
+from datasets import load_dataset
+from google.colab import userdata
+from huggingface_hub import login
+from transformers import (
+    AutoModelForSequenceClassification,
+    AutoTokenizer,
+    Trainer,
+    TrainingArguments,
+)
+
+from pricer.items import PREFIX
+
+login(userdata.get("HF_TOKEN"))
+os.environ["WANDB_API_KEY"] = userdata.get("WANDB_API_KEY")
+os.environ["WANDB_PROJECT"] = "wine-pricer"
+os.environ["WANDB_LOG_MODEL"] = "false"
+os.environ["WANDB_WATCH"] = "false"
+wandb.login()
+
+BASE_MODEL = "answerdotai/ModernBERT-large"
+DATASET = "borjahernandez/wine-pricer"
+PROJECT_NAME = "wine-pricer"
+HF_USER = "borjahernandez"
+RUN = "wine-pricer-modernbert-large-full"
+RUN_NAME = f"{RUN}-{datetime.now():%Y%m%d-%H%M}"
+PROJECT_RUN_NAME = f"{PROJECT_NAME}-{RUN_NAME}"
+HUB_MODEL_NAME = f"{HF_USER}/{PROJECT_RUN_NAME}"
+
+USE_BF16 = torch.cuda.is_bf16_supported()
+print(f"{torch.cuda.get_device_name(0)} | capability {torch.cuda.get_device_capability()} | bf16={USE_BF16}")"""),
+    ("md", """### Prepare the regression dataset
+
+The input is the exact stored inference prompt used by the Qwen notebook: the question, the same
+truncated tasting note, and the `Price is $` prefix -- literally `Wine.test_prompt()`. Identical
+strings at train and eval time are what makes the two leaderboard rows comparable.
+
+The label is `log1p(price)`; predictions are converted back with `expm1` for reporting."""),
+    ("code", """data = load_dataset(DATASET)
+print(data)
+
+
+def add_label(row):
+    return {
+        # Identical to Wine.test_prompt(), so training and inference see the same string.
+        "text": row["prompt"].split(PREFIX)[0] + PREFIX,
+        "labels": np.float32(np.log1p(row["price"])),
+    }
+
+
+encoded = data.map(add_label, remove_columns=data["train"].column_names)
+
+MAX_LENGTH = 256
+tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
+
+
+def tokenize(batch):
+    return tokenizer(batch["text"], truncation=True, max_length=MAX_LENGTH)
+
+
+tokenized = encoded.map(tokenize, batched=True, remove_columns=["text"])
+
+VAL_SPLIT = "validation" if "validation" in tokenized else "eval"
+print(f"splits: {list(tokenized)} | using {VAL_SPLIT!r} for eval")
+
+# Truncation here is silent -- the tokenizer cuts rather than drops. Long tasting notes are
+# written about expensive bottles, so any loss skews the thin top bins the balancing protects.
+lens = np.array([len(x) for x in tokenized["train"]["input_ids"]])
+print(f"token lengths p50/p95/p99/max: {np.percentile(lens, [50, 95, 99, 100]).round().astype(int)}")
+print(f"truncated: {(lens >= MAX_LENGTH).sum():,} of {len(lens):,}")"""),
+    ("code", """NUM_EPOCHS = 2
+PER_DEVICE_BATCH_SIZE = 16
+GRADIENT_ACCUMULATION_STEPS = 2          # effective batch 32
+EFFECTIVE_BATCH_SIZE = PER_DEVICE_BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS
+STEPS = math.ceil(len(tokenized["train"]) / EFFECTIVE_BATCH_SIZE) * NUM_EPOCHS
+
+LOG_STEPS = 25
+SAVE_STEPS = 500
+
+print(f"{STEPS:,} optimizer steps at effective batch {EFFECTIVE_BATCH_SIZE}")
+
+ARGS = TrainingArguments(
+    output_dir=PROJECT_RUN_NAME,
+    num_train_epochs=NUM_EPOCHS,
+    per_device_train_batch_size=PER_DEVICE_BATCH_SIZE,
+    per_device_eval_batch_size=64,
+    gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
+    gradient_checkpointing=False,
+    learning_rate=2e-5,                  # full fine-tune; a LoRA rate like 2e-4 wrecks this
+    lr_scheduler_type="cosine",
+    warmup_steps=int(0.06 * STEPS),
+    weight_decay=0.01,
+    max_grad_norm=1.0,
+    bf16=USE_BF16,
+    fp16=not USE_BF16,
+    load_best_model_at_end=True,
+    metric_for_best_model="rmsle",
+    greater_is_better=False,
+    save_strategy="steps",
+    save_steps=SAVE_STEPS,
+    save_total_limit=2,
+    eval_strategy="steps",
+    eval_steps=SAVE_STEPS,
+    logging_steps=LOG_STEPS,
+    report_to="wandb",
+    run_name=RUN_NAME,
+    push_to_hub=True,
+    hub_strategy="end",                  # full weights are ~1.6GB per checkpoint
+    hub_model_id=HUB_MODEL_NAME,
+    hub_private_repo=True,
+)"""),
+    ("code", """MAX_LOG_PRICE = float(np.log1p(1000))    # clamp so expm1 cannot overflow or go negative
+
+
+def compute_metrics(eval_pred):
+    preds, labels = eval_pred
+    preds = np.asarray(preds).reshape(-1)
+    labels = np.asarray(labels).reshape(-1)
+    clipped = np.clip(preds, 0.0, MAX_LOG_PRICE)
+
+    # RMSLE overall is dominated by the cheap majority. The expensive half is where the
+    # balancing work was aimed, and where a weak model actually shows up.
+    expensive = labels >= np.median(labels)
+    return {
+        "rmsle": float(np.sqrt(np.mean((preds - labels) ** 2))),
+        "rmsle_expensive": float(np.sqrt(np.mean((preds[expensive] - labels[expensive]) ** 2))),
+        "mae_dollars": float(np.mean(np.abs(np.expm1(clipped) - np.expm1(labels)))),
+    }
+
+
+model = AutoModelForSequenceClassification.from_pretrained(
+    BASE_MODEL,
+    num_labels=1,
+    problem_type="regression",
+)
+model.config.pad_token_id = tokenizer.pad_token_id
+
+trainer = Trainer(
+    model=model,
+    args=ARGS,
+    train_dataset=tokenized["train"],
+    eval_dataset=tokenized[VAL_SPLIT],
+    processing_class=tokenizer,
+    compute_metrics=compute_metrics,
+)
+
+# DataCollatorWithPadding occasionally casts labels to int64, which would silently turn
+# this regression into nonsense. Cheaper to check than to discover from a flat curve.
+_b = next(iter(trainer.get_train_dataloader()))
+print(_b["labels"].dtype, _b["labels"][:5])
+assert _b["labels"].dtype in (torch.float32, torch.float16, torch.bfloat16)"""),
+    ("code", """trainer.train()
+print(trainer.evaluate())
+trainer.push_to_hub(f"Fine-tuned {BASE_MODEL} on {DATASET}")
+wandb.finish()"""),
+    ("md", """### Evaluate on the shared test split
+
+Reloads the pushed weights from the Hub -- a full fine-tune, so the repo holds complete weights,
+no adapter merge -- and scores all 2,000 test wines through the same evaluator as every other
+model. The prediction is clipped to `[0, log1p(1000)]` in log space, the same bound the Qwen
+parser applies in dollar space."""),
+    ("code", """import numpy as np
+import torch
+from google.colab import userdata
+from huggingface_hub import login
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+from pricer.evaluator import evaluate, leaderboard
+from pricer.items import Wine
+
+login(userdata.get("HF_TOKEN"))          # the model repo is private
+
+DATASET = "borjahernandez/wine-pricer"
+FINETUNED = "borjahernandez/wine-pricer-wine-pricer-modernbert-large-full-20260905-1229"
+
+MAX_LENGTH = 256                          # same as training and as the Qwen evaluation
+MAX_LOG_PRICE = float(np.log1p(1000))
+
+tokenizer = AutoTokenizer.from_pretrained(FINETUNED)
+model = AutoModelForSequenceClassification.from_pretrained(FINETUNED)
+model.to("cuda" if torch.cuda.is_available() else "cpu")
+model.eval()
+print(f"num_labels={model.config.num_labels}, problem_type={model.config.problem_type}")
+
+_, _, test = Wine.from_hub(DATASET)
+
+
+def specialist(wine: Wine) -> float:
+    inputs = tokenizer(
+        wine.test_prompt(), return_tensors="pt", truncation=True, max_length=MAX_LENGTH
+    ).to(model.device)
+    with torch.no_grad():
+        log_price = model(**inputs).logits.squeeze().item()
+    return float(np.expm1(min(max(log_price, 0.0), MAX_LOG_PRICE)))
+
+
+specialist.__name__ = "ModernBERT-large (full FT)"
+evaluate(specialist, test, size=len(test))
+leaderboard()"""),
+    ("md", """### Experiments
+
+- **LoRA as a comparison run**: r=16 on `Wqkv`/`Wo`/`Wi` with `modules_to_save=["head", "classifier"]`
+  -- the `head` projection comes from the MLM checkpoint, and freezing it handicaps the baseline.
+- **Train on `summary` instead of `full`** using the summaries dataset.
+- **Add `points` deliberately** as a leakage experiment, then compare the RMSLE gap.
+- **`MAX_LENGTH`**: notes top out near 200 tokens, so 256 loses nothing -- try 512 anyway."""),
 ]
 
 
@@ -830,5 +1208,8 @@ if __name__ == "__main__":
     build("2_baseline_ladder.ipynb", BASELINES)
     build("3_prompts_and_tokens.ipynb", PROMPTS)
     build("4_qlora_finetune_colab.ipynb", QLORA)
-    build("5_retrieval_and_rag.ipynb", RAG)
-    build("6_agent_framework.ipynb", AGENTS)
+    build("5_qlora_finetune_att_only.ipynb", QLORA_ATT)
+    build("6_qlora_finetune_bs16.ipynb", QLORA_BS16)
+    build("7_modernbert_finetune_colab.ipynb", MODERNBERT)
+    build("8_retrieval_and_rag.ipynb", RAG)
+    build("9_agent_framework.ipynb", AGENTS)

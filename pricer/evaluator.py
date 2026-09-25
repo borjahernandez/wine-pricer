@@ -24,7 +24,7 @@ from tqdm.auto import tqdm
 
 from pricer.items import ROOT, Wine
 
-DEFAULT_SIZE = 250
+DEFAULT_SIZE = 2000
 WORKERS = 5
 RESULTS_FILE = ROOT / "results.json"
 

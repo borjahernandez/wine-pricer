@@ -17,7 +17,7 @@ from pricer.items import ROOT, Wine
 
 CHROMA_DIR = ROOT / "chroma"
 COLLECTION = "wines"
-ENCODER = "sentence-transformers/all-MiniLM-L6-v2"
+ENCODER = "Qwen/Qwen3-Embedding-0.6B"
 BATCH = 1_000
 
 
